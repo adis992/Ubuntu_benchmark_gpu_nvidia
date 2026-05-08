@@ -260,13 +260,18 @@ def run_memory(cp, memory_mb):
     except cp.cuda.memory.OutOfMemoryError:
         time.sleep(0.5)
 
+import sys as _sys
+print(f"GPU stress starting: gpu_idx={gpu_idx} CUDA_VISIBLE_DEVICES={{os.environ.get('CUDA_VISIBLE_DEVICES')}}", file=_sys.stderr, flush=True)
 try:
     import cupy as cp
-    cp.cuda.Device({gpu_idx}).use()
+    # CUDA_VISIBLE_DEVICES already selects the physical GPU - always use device 0
+    cp.cuda.Device(0).use()
+    print(f"CuPy device 0 active (physical GPU {gpu_idx})", file=_sys.stderr, flush=True)
     wtype = "{workload_type}"
     dtype = {dtype_str}
     size = {compute_size}
     mem_mb = {memory_mb}
+    print(f"workload={{wtype}} size={{size}} mem={{mem_mb}}MB", file=_sys.stderr, flush=True)
     if wtype == 'compute':
         run_compute(cp, size, dtype)
     elif wtype == 'memory':
@@ -276,7 +281,8 @@ try:
         t = threading.Thread(target=run_memory, args=(cp, mem_mb // 2), daemon=True)
         t.start()
         run_compute(cp, size, dtype)
-except ImportError:
+except ImportError as e:
+    print(f"CuPy not available: {{e}} - using numpy CPU fallback", file=_sys.stderr, flush=True)
     import numpy as np
     size = 1024
     a = np.random.random((size, size)).astype(np.float32)
@@ -288,8 +294,10 @@ except ImportError:
         except Exception:
             time.sleep(0.1)
 except Exception as e:
-    print(f"Fatal: {{e}}", file=sys.stderr)
-    sys.exit(1)
+    print(f"Fatal: {{e}}", file=_sys.stderr, flush=True)
+    import traceback
+    traceback.print_exc(file=_sys.stderr)
+    _sys.exit(1)
 """
             script_path = f"/tmp/gpu_stress_{gpu_idx}_{int(time.time())}.py"
             with open(script_path, 'w') as f:
