@@ -50,14 +50,14 @@ class _StressWorker:
 
             # Pre-allocate matrices once
             try:
-                a = cp.random.random((size, size), dtype=dtype)
-                b = cp.random.random((size, size), dtype=dtype)
+                a = cp.full((size, size), 0.1, dtype=dtype)
+                b = cp.full((size, size), 0.1, dtype=dtype)
                 c = cp.zeros((size, size), dtype=dtype)
             except Exception:
                 size = max(512, size // 2)
                 logger.warning(f"GPU {self.gpu_idx}: OOM on alloc, reduced to {size}x{size}")
-                a = cp.random.random((size, size), dtype=dtype)
-                b = cp.random.random((size, size), dtype=dtype)
+                a = cp.full((size, size), 0.1, dtype=dtype)
+                b = cp.full((size, size), 0.1, dtype=dtype)
                 c = cp.zeros((size, size), dtype=dtype)
 
             # Memory buffer for mixed/memory workloads
@@ -81,7 +81,7 @@ class _StressWorker:
                         cp.cuda.Stream.null.synchronize()
                         it += 1
                         if it % 100 == 0:
-                            cp.random.random((size, size), out=a)
+                            a[:] = cp.sin(c)
 
                     if mem_buf is not None:
                         cp.random.random(len(mem_buf), out=mem_buf)
@@ -94,8 +94,8 @@ class _StressWorker:
                 except cp.cuda.memory.OutOfMemoryError:
                     size = max(512, size // 2)
                     logger.warning(f"GPU {self.gpu_idx}: OOM during run, shrinking to {size}x{size}")
-                    a = cp.random.random((size, size), dtype=dtype)
-                    b = cp.random.random((size, size), dtype=dtype)
+                    a = cp.full((size, size), 0.1, dtype=dtype)
+                    b = cp.full((size, size), 0.1, dtype=dtype)
                     c = cp.zeros((size, size), dtype=dtype)
                     mem_buf = None
                     time.sleep(0.5)
