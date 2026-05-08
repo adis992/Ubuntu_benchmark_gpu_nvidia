@@ -1,0 +1,32 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5001
+  },
+  "benchmark": {
+    "default_duration": 300,
+    "max_duration": 86400,
+    "update_interval": 1.0,
+    "stress_levels": {
+      "low": 30,
+      "medium": 60,
+      "high": 85,
+      "extreme": 100
+    }
+  },
+  "monitoring": {
+    "poll_interval": 0.5,
+    "history_size": 300
+  },
+  "logging": {
+    "directory": "logs",
+    "max_file_size": 10485760,
+    "backup_count": 10
+  },
+  "safety": {
+    "max_temperature": 100,
+    "critical_temperature": 105,
+    "auto_stop_benchmark_on_critical": true,
+    "fan_control_enabled": true
+  }
+}

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NVIDIA GPU Benchmark Tool</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎮 NVIDIA GPU Benchmark Tool</h1>
+            <div class="status-bar">
+                <span class="status-item">
+                    <span class="status-dot" id="connection-status"></span>
+                    <span id="connection-text">Connecting...</span>
+                </span>
+                <span class="status-item">
+                    <strong>GPUs:</strong> <span id="gpu-count">-</span>
+                </span>
+                <span class="status-item">
+                    <strong>Time:</strong> <span id="current-time">-</span>
+                </span>
+            </div>
+        </header>
+
+        <div class="controls-panel">
+            <h2>⚙️ Control Panel</h2>
+            <div class="controls-grid">
+                <div class="control-group">
+                    <label>Select GPUs:</label>
+                    <div id="gpu-selector" class="gpu-selector">
+                        <!-- GPU checkboxes will be inserted here -->
+                    </div>
+                </div>
+                
+                <div class="control-group">
+                    <label for="duration">Duration (seconds):</label>
+                    <input type="number" id="duration" min="1" max="86400" value="300">
+                </div>
+                
+                <div class="control-group">
+                    <label for="stress-level">Stress Level (%):</label>
+                    <input type="range" id="stress-level" min="1" max="100" value="100">
+                    <span id="stress-value">100%</span>
+                </div>
+                
+                <div class="control-group">
+                    <button id="start-benchmark" class="btn btn-primary">🚀 Start Benchmark</button>
+                    <button id="stop-all-benchmarks" class="btn btn-danger">⛔ Stop All</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="safety-panel">
+            <h2>🛡️ Safety Settings</h2>
+            <div class="safety-grid">
+                <div class="safety-item">
+                    <label>Max Temperature (°C):</label>
+                    <input type="number" id="max-temp" min="60" max="110" value="100">
+                </div>
+                <div class="safety-item">
+                    <label>Critical Temperature (°C):</label>
+                    <input type="number" id="critical-temp" min="70" max="115" value="105">
+                </div>
+                <div class="safety-item">
+                    <label>
+                        <input type="checkbox" id="auto-stop" checked>
+                        Auto-stop benchmark on critical temp
+                    </label>
+                </div>
+                <div class="safety-item">
+                    <button id="save-config" class="btn btn-secondary">💾 Save Settings</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="gpus-container" id="gpus-container">
+            <!-- GPU cards will be inserted here -->
+        </div>
+
+        <div class="benchmarks-panel">
+            <h2>📊 Active Benchmarks</h2>
+            <div id="active-benchmarks" class="benchmarks-list">
+                <p class="no-data">No active benchmarks</p>
+            </div>
+        </div>
+
+        <div class="logs-panel">
+            <h2>📝 System Logs</h2>
+            <div id="logs-container" class="logs-container">
+                <p class="log-entry">System initialized...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
