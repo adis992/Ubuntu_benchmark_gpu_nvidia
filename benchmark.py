@@ -19,15 +19,15 @@ class _StressWorker:
     """Runs GPU stress directly in a daemon thread. Mimics subprocess.Popen interface."""
 
     def __init__(self, gpu_idx, stress_level, workload_type, np_dtype, compute_size, memory_mb):
-        self.gpu_idx      = gpu_idx
-        self.stress_level = stress_level
+        self.gpu_idx       = gpu_idx
+        self.stress_level  = stress_level
         self.workload_type = workload_type
-        self.np_dtype     = np_dtype
-        self.compute_size = compute_size
-        self.memory_mb    = memory_mb
-        self._stop        = False
-        self._thread      = None
-        self.returncode   = None
+        self.np_dtype      = np_dtype
+        self.compute_size  = compute_size
+        self.memory_mb     = memory_mb
+        self._stop         = False
+        self._thread       = None
+        self.returncode    = None
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -36,71 +36,78 @@ class _StressWorker:
     def _run(self):
         try:
             import cupy as cp
+            # Explicitly set device and warm up
             cp.cuda.Device(self.gpu_idx).use()
-            logger.info(f"GPU {self.gpu_idx} stress thread active, "
-                        f"size={self.compute_size}, type={self.workload_type}")
-            if self.workload_type == 'compute':
-                self._compute(cp)
-            elif self.workload_type == 'memory':
-                self._memory(cp)
-            else:
-                mem_t = threading.Thread(
-                    target=self._memory, args=(cp,), daemon=True)
-                mem_t.start()
-                self._compute(cp)
-        except Exception as e:
-            logger.error(f"GPU {self.gpu_idx} stress error: {e}")
-        finally:
-            self.returncode = 0
+            warmup = cp.zeros((64, 64), dtype=cp.float32)
+            cp.matmul(warmup, warmup)
+            cp.cuda.Stream.null.synchronize()
+            del warmup
+            logger.info(f"GPU {self.gpu_idx} stress worker ready "
+                        f"(size={self.compute_size}, mem={self.memory_mb}MB, type={self.workload_type})")
 
-    def _compute(self, cp):
-        size  = self.compute_size
-        dtype = getattr(cp, self.np_dtype)
-        try:
-            a = cp.random.random((size, size), dtype=dtype)
-            b = cp.random.random((size, size), dtype=dtype)
-            c = cp.zeros((size, size), dtype=dtype)
-        except cp.cuda.memory.OutOfMemoryError:
-            size = max(512, size // 2)
-            a = cp.random.random((size, size), dtype=dtype)
-            b = cp.random.random((size, size), dtype=dtype)
-            c = cp.zeros((size, size), dtype=dtype)
-        it = 0
-        delay = max(0.0, (100 - self.stress_level) / 2000.0)
-        while not self._stop:
+            dtype = getattr(cp, self.np_dtype)
+            size  = self.compute_size
+
+            # Pre-allocate matrices once
             try:
-                cp.matmul(a, b, out=c)
-                cp.sqrt(c, out=c)
-                cp.sin(c, out=c)
-                cp.cuda.Stream.null.synchronize()
-                it += 1
-                if it % 100 == 0:
-                    cp.random.random((size, size), out=a)
-                if delay > 0:
-                    time.sleep(delay)
-            except cp.cuda.memory.OutOfMemoryError:
-                size = max(512, size // 2)
                 a = cp.random.random((size, size), dtype=dtype)
                 b = cp.random.random((size, size), dtype=dtype)
                 c = cp.zeros((size, size), dtype=dtype)
-                time.sleep(0.5)
             except Exception:
-                time.sleep(0.1)
+                size = max(512, size // 2)
+                logger.warning(f"GPU {self.gpu_idx}: OOM on alloc, reduced to {size}x{size}")
+                a = cp.random.random((size, size), dtype=dtype)
+                b = cp.random.random((size, size), dtype=dtype)
+                c = cp.zeros((size, size), dtype=dtype)
 
-    def _memory(self, cp):
-        n = min(self.memory_mb * 1024 * 1024 // 4, 256 * 1024 * 1024)
-        try:
-            buf = cp.zeros(n, dtype=cp.float32)
+            # Memory buffer for mixed/memory workloads
+            mem_buf = None
+            if self.workload_type in ('memory', 'mixed'):
+                try:
+                    n = min(self.memory_mb * 1024 * 1024 // 4, 256 * 1024 * 1024)
+                    mem_buf = cp.zeros(n, dtype=cp.float32)
+                except Exception:
+                    mem_buf = None
+
+            delay = max(0.0, (100 - self.stress_level) / 2000.0)
+            it = 0
+
             while not self._stop:
                 try:
-                    cp.random.random(n, out=buf)
-                    _ = cp.sum(buf)
-                    cp.cuda.Stream.null.synchronize()
-                    time.sleep(0.002)
-                except Exception:
-                    time.sleep(0.1)
-        except Exception:
-            time.sleep(0.5)
+                    if self.workload_type != 'memory':
+                        cp.matmul(a, b, out=c)
+                        cp.sqrt(c, out=c)
+                        cp.sin(c, out=c)
+                        cp.cuda.Stream.null.synchronize()
+                        it += 1
+                        if it % 100 == 0:
+                            cp.random.random((size, size), out=a)
+
+                    if mem_buf is not None:
+                        cp.random.random(len(mem_buf), out=mem_buf)
+                        _ = float(cp.sum(mem_buf))
+                        cp.cuda.Stream.null.synchronize()
+
+                    if delay > 0:
+                        time.sleep(delay)
+
+                except cp.cuda.memory.OutOfMemoryError:
+                    size = max(512, size // 2)
+                    logger.warning(f"GPU {self.gpu_idx}: OOM during run, shrinking to {size}x{size}")
+                    a = cp.random.random((size, size), dtype=dtype)
+                    b = cp.random.random((size, size), dtype=dtype)
+                    c = cp.zeros((size, size), dtype=dtype)
+                    mem_buf = None
+                    time.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"GPU {self.gpu_idx} stress loop error: {e}")
+                    time.sleep(0.2)
+
+        except Exception as e:
+            logger.error(f"GPU {self.gpu_idx} stress FATAL: {e}", exc_info=True)
+        finally:
+            self.returncode = 0
+            logger.info(f"GPU {self.gpu_idx} stress worker exited")
 
     # subprocess.Popen-compatible interface
     def poll(self):
@@ -138,11 +145,16 @@ class BenchmarkWorkload:
         
         if not gpu_indices:
             return {"success": False, "error": "No GPUs specified"}
-        
-        # Check if any GPU is already being benchmarked
-        for idx in gpu_indices:
-            if idx in self.active_benchmarks:
-                return {"success": False, "error": f"GPU {idx} is already being benchmarked"}
+
+        # Kill any lingering workers for these GPUs from previous benchmarks
+        for bid in list(self.active_benchmarks.keys()):
+            if any(g in self.active_benchmarks[bid]["gpu_indices"] for g in gpu_indices):
+                self.stop_flags[bid] = True
+
+        # Clean up finished stop_flags
+        for bid in list(self.stop_flags.keys()):
+            if bid not in self.active_benchmarks:
+                del self.stop_flags[bid]
         
         # Validate inputs
         stress_level = max(1, min(100, stress_level))
@@ -267,10 +279,13 @@ class BenchmarkWorkload:
                                     self.active_benchmarks[benchmark_id]["stop_reason"] = reason
                                 break
                 
-                # Check if processes are still running
-                for gpu_idx, proc in processes:
+                # Check if processes are still running - restart if dead
+                for i, (gpu_idx, proc) in enumerate(processes):
                     if proc.poll() is not None:
-                        logger.warning(f"Benchmark process for GPU {gpu_idx} terminated unexpectedly")
+                        logger.warning(f"GPU {gpu_idx} stress worker died - restarting")
+                        new_proc = self._start_gpu_stress(gpu_idx, stress_level, workload_type, precision, memory_level)
+                        if new_proc:
+                            processes[i] = (gpu_idx, new_proc)
             
             # Stop all processes
             for gpu_idx, proc in processes:
