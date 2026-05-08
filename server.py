@@ -56,6 +56,16 @@ app.config['SECRET_KEY'] = 'nvidia-benchmark-secret-key-change-in-production'
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
+# Return JSON for all errors instead of HTML (prevents "unexpected character" in frontend)
+@app.errorhandler(Exception)
+def handle_exception(e):
+    logger.error(f"Unhandled exception: {e}", exc_info=True)
+    return jsonify({'error': str(e)}), 500
+
+@app.errorhandler(404)
+def handle_404(e):
+    return jsonify({'error': 'Not found'}), 404
+
 # Initialize GPU monitor and benchmark
 gpu_monitor = GPUMonitor()
 benchmark_workload = BenchmarkWorkload(gpu_monitor, config)
@@ -171,8 +181,22 @@ def api_benchmarks_active():
 
 @app.route('/api/benchmarks/results')
 def api_benchmarks_results():
-    """Get benchmark results"""
-    return jsonify(benchmark_workload.get_benchmark_results())
+    """Get completed benchmark results with metrics history (JSON-safe)"""
+    raw = benchmark_workload.get_benchmark_results()
+    results = {}
+    for bid, r in raw.items():
+        safe = {}
+        for k, v in r.items():
+            if k == 'processes':
+                continue
+            if hasattr(v, 'isoformat'):
+                safe[k] = v.isoformat()
+            elif isinstance(v, list):
+                safe[k] = v
+            else:
+                safe[k] = v
+        results[bid] = safe
+    return jsonify(results)
 
 
 @app.route('/api/fan/set', methods=['POST'])
@@ -222,15 +246,10 @@ def api_config_update():
     """Update configuration"""
     global config
     data = request.json
-    
-    # Update config (be careful with what we allow to be updated)
     allowed_keys = ['benchmark', 'monitoring', 'safety']
-    
     for key in allowed_keys:
         if key in data:
             config[key].update(data[key])
-    
-    # Save to file
     try:
         with open('config.json', 'w') as f:
             json.dump(config, f, indent=2)
@@ -239,24 +258,6 @@ def api_config_update():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/benchmarks/results')
-def api_benchmark_results():
-    """Get completed benchmark results with metrics history"""
-    results = {}
-    for bid, r in benchmark_workload.benchmark_results.items():
-        safe = {}
-        for k, v in r.items():
-            if k == 'processes':
-                continue
-            if hasattr(v, 'isoformat'):
-                safe[k] = v.isoformat()
-            else:
-                safe[k] = v
-        results[bid] = safe
-    return jsonify(results)
-
-
-# WebSocket events
 @socketio.on('connect')
 def handle_connect():
     """Handle client connection"""

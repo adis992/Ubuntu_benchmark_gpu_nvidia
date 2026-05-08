@@ -26,7 +26,8 @@
   "safety": {
     "max_temperature": 100,
     "critical_temperature": 105,
-    "auto_stop_benchmark_on_critical": true,
-    "fan_control_enabled": true
+    "auto_shutdown_on_critical": true,
+    "fan_control_enabled": true,
+    "auto_stop_benchmark_on_critical": true
   }
 }
