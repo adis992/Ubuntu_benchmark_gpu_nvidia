@@ -58,10 +58,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=${SERVICE_USER_ACTUAL}
+User=root
 WorkingDirectory=${INSTALL_DIR}
 Environment="PATH=${INSTALL_DIR}/venv/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="VIRTUAL_ENV=${INSTALL_DIR}/venv"
+Environment="HOME=/root"
 ExecStart=${INSTALL_DIR}/venv/bin/python3 ${INSTALL_DIR}/server.py
 Restart=on-failure
 RestartSec=10

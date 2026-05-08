@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="nvidia-gpu-benchmark"
-SERVICE_USER="${SUDO_USER:-$USER}"
+SERVICE_USER="root"
 INSTALL_DIR="/opt/nvidia-gpu-benchmark"
 
 echo "================================================"
@@ -105,10 +105,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=$SERVICE_USER
+User=root
 WorkingDirectory=$INSTALL_DIR
 Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="VIRTUAL_ENV=$INSTALL_DIR/venv"
+Environment="HOME=/root"
 ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/server.py
 Restart=on-failure
 RestartSec=10
@@ -153,7 +153,7 @@ if systemctl is-active --quiet "$SERVICE_NAME"; then
     echo "================================================"
     echo ""
     echo "Service Status: $(systemctl is-active $SERVICE_NAME)"
-    echo "Dashboard URL: http://localhost:5000"
+    echo "Dashboard URL: http://localhost:5000  (samo ovaj port!)"
     echo ""
     echo "Useful commands:"
     echo "  Start service:   sudo systemctl start $SERVICE_NAME"
