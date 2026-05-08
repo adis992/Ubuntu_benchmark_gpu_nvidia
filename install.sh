@@ -109,15 +109,11 @@ User=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="VIRTUAL_ENV=$INSTALL_DIR/venv"
-ExecStart=/bin/bash -c 'source $INSTALL_DIR/venv/bin/activate && python3 $INSTALL_DIR/server.py'
-Restart=always
+ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/server.py
+Restart=on-failure
 RestartSec=10
 StandardOutput=append:$INSTALL_DIR/logs/service.log
 StandardError=append:$INSTALL_DIR/logs/service_error.log
-
-# Security settings
-NoNewPrivileges=true
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
