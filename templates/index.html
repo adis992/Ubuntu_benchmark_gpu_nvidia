@@ -9,48 +9,74 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
-    <div class="container">
-        <header>
+<div class="container">
+    <header>
+        <div class="header-top">
             <h1>🎮 NVIDIA GPU Benchmark Tool</h1>
             <div class="status-bar">
-                <span class="status-item">
-                    <span class="status-dot" id="connection-status"></span>
-                    <span id="connection-text">Connecting...</span>
-                </span>
-                <span class="status-item">
-                    <strong>GPUs:</strong> <span id="gpu-count">-</span>
-                </span>
-                <span class="status-item">
-                    <strong>Time:</strong> <span id="current-time">-</span>
-                </span>
+                <span class="status-item"><span class="status-dot" id="connection-status"></span><span id="connection-text">Connecting...</span></span>
+                <span class="status-item"><strong>GPUs:</strong> <span id="gpu-count">-</span></span>
+                <span class="status-item"><strong>Time:</strong> <span id="current-time">-</span></span>
             </div>
-        </header>
+        </div>
+        <nav class="tab-nav">
+            <button class="tab-btn active" data-tab="monitor">📊 Monitor</button>
+            <button class="tab-btn" data-tab="logs">📋 Logs &amp; Analytics</button>
+            <button class="tab-btn" data-tab="system">🔧 System &amp; Drivers</button>
+            <button class="tab-btn" data-tab="results">📈 Results</button>
+        </nav>
+    </header>
 
+    <!-- TAB 1: MONITOR -->
+    <div class="tab-content active" id="tab-monitor">
         <div class="controls-panel">
             <h2>⚙️ Control Panel</h2>
             <div class="controls-grid">
                 <div class="control-group">
                     <label>Select GPUs:</label>
-                    <div id="gpu-selector" class="gpu-selector">
-                        <!-- GPU checkboxes will be inserted here -->
-                    </div>
+                    <div id="gpu-selector" class="gpu-selector"></div>
                 </div>
-                
                 <div class="control-group">
                     <label for="duration">Duration (seconds):</label>
                     <input type="number" id="duration" min="1" max="86400" value="300">
                 </div>
-                
                 <div class="control-group">
                     <label for="stress-level">Stress Level (%):</label>
                     <input type="range" id="stress-level" min="1" max="100" value="100">
                     <span id="stress-value">100%</span>
                 </div>
-                
                 <div class="control-group">
+                    <label for="workload-type">Workload Type:</label>
+                    <select id="workload-type" class="select-input">
+                        <option value="mixed">Mixed (Compute + Memory)</option>
+                        <option value="compute">Compute Only (Matrix Multiply)</option>
+                        <option value="memory">Memory Bandwidth</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="precision">Precision:</label>
+                    <select id="precision" class="select-input">
+                        <option value="fp32">FP32 (Single Precision)</option>
+                        <option value="fp16">FP16 (Half Precision, faster)</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="memory-level">Memory Stress (%):</label>
+                    <input type="range" id="memory-level" min="0" max="100" value="50">
+                    <span id="memory-value">50%</span>
+                </div>
+                <div class="control-group span-2">
                     <button id="start-benchmark" class="btn btn-primary">🚀 Start Benchmark</button>
                     <button id="stop-all-benchmarks" class="btn btn-danger">⛔ Stop All</button>
                 </div>
+            </div>
+            <div class="presets-row">
+                <span class="preset-label">Presets:</span>
+                <button class="btn btn-preset preset-light" onclick="applyPreset('light')">💚 Light</button>
+                <button class="btn btn-preset preset-medium" onclick="applyPreset('medium')">💛 Medium</button>
+                <button class="btn btn-preset preset-heavy" onclick="applyPreset('heavy')">🟠 Heavy</button>
+                <button class="btn btn-preset preset-extreme" onclick="applyPreset('extreme')">🔴 Extreme</button>
+                <button class="btn btn-preset preset-memtest" onclick="applyPreset('memtest')">💾 MemTest</button>
             </div>
         </div>
 
@@ -66,10 +92,7 @@
                     <input type="number" id="critical-temp" min="70" max="115" value="105">
                 </div>
                 <div class="safety-item">
-                    <label>
-                        <input type="checkbox" id="auto-stop" checked>
-                        Auto-stop benchmark on critical temp
-                    </label>
+                    <label><input type="checkbox" id="auto-stop" checked> Auto-stop on critical temp</label>
                 </div>
                 <div class="safety-item">
                     <button id="save-config" class="btn btn-secondary">💾 Save Settings</button>
@@ -77,9 +100,7 @@
             </div>
         </div>
 
-        <div class="gpus-container" id="gpus-container">
-            <!-- GPU cards will be inserted here -->
-        </div>
+        <div class="gpus-container" id="gpus-container"></div>
 
         <div class="benchmarks-panel">
             <h2>📊 Active Benchmarks</h2>
@@ -87,15 +108,175 @@
                 <p class="no-data">No active benchmarks</p>
             </div>
         </div>
+    </div>
 
-        <div class="logs-panel">
-            <h2>📝 System Logs</h2>
-            <div id="logs-container" class="logs-container">
-                <p class="log-entry">System initialized...</p>
+    <!-- TAB 2: LOGS & ANALYTICS -->
+    <div class="tab-content" id="tab-logs">
+        <div class="logs-main-panel">
+            <div class="logs-header">
+                <h2>📋 Logs &amp; Analytics</h2>
+                <div class="logs-actions">
+                    <button class="btn btn-secondary" onclick="clearLogs()">🗑️ Clear</button>
+                    <button class="btn btn-secondary" onclick="exportLogs()">📥 Export JSON</button>
+                </div>
+            </div>
+            <div class="log-tabs">
+                <button class="log-tab-btn active" data-logtab="system">🖥️ System</button>
+                <button class="log-tab-btn" data-logtab="temperature">🌡️ Temperature</button>
+                <button class="log-tab-btn" data-logtab="fan">🌀 Fan Speed</button>
+                <button class="log-tab-btn" data-logtab="warnings">⚠️ Warnings</button>
+                <button class="log-tab-btn" data-logtab="benchmark">🏁 Benchmark</button>
+            </div>
+
+            <div class="log-tab-content active" id="logtab-system">
+                <div class="log-table-wrapper">
+                    <table class="log-table">
+                        <thead><tr><th style="width:120px">Time</th><th style="width:70px">Level</th><th>Message</th></tr></thead>
+                        <tbody id="log-table-system"><tr><td colspan="3" class="no-data-cell">System initialized...</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="log-tab-content" id="logtab-temperature">
+                <div class="charts-row">
+                    <div class="chart-wrap"><canvas id="chart-temperature"></canvas></div>
+                    <div class="chart-wrap"><canvas id="chart-power"></canvas></div>
+                </div>
+                <div class="log-table-wrapper">
+                    <table class="log-table">
+                        <thead><tr><th style="width:120px">Time</th><th style="width:70px">GPU</th><th style="width:90px">Temp (°C)</th><th style="width:100px">Util (%)</th><th style="width:100px">Power (W)</th><th>Clock (MHz)</th></tr></thead>
+                        <tbody id="log-table-temperature"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="log-tab-content" id="logtab-fan">
+                <div class="charts-row">
+                    <div class="chart-wrap"><canvas id="chart-fan"></canvas></div>
+                    <div class="chart-wrap"><canvas id="chart-utilization"></canvas></div>
+                </div>
+                <div class="log-table-wrapper">
+                    <table class="log-table">
+                        <thead><tr><th style="width:120px">Time</th><th style="width:70px">GPU</th><th style="width:120px">Fan Speed (%)</th><th style="width:120px">Temp (°C)</th><th>Power (W)</th></tr></thead>
+                        <tbody id="log-table-fan"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="log-tab-content" id="logtab-warnings">
+                <div class="log-table-wrapper">
+                    <table class="log-table">
+                        <thead><tr><th style="width:120px">Time</th><th style="width:70px">GPU</th><th style="width:130px">Type</th><th>Detail</th></tr></thead>
+                        <tbody id="log-table-warnings"><tr><td colspan="4" class="no-data-cell">No warnings recorded</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="log-tab-content" id="logtab-benchmark">
+                <div class="log-table-wrapper">
+                    <table class="log-table">
+                        <thead><tr><th style="width:120px">Time</th><th style="width:70px">Level</th><th>Message</th></tr></thead>
+                        <tbody id="log-table-benchmark"><tr><td colspan="3" class="no-data-cell">No benchmark events yet</td></tr></tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <!-- TAB 3: SYSTEM & DRIVERS -->
+    <div class="tab-content" id="tab-system">
+        <div class="system-panel">
+            <h2>🔧 System Information</h2>
+            <div class="system-info-grid" id="system-info-grid">
+                <div class="system-info-card">
+                    <h3>🖥️ Driver &amp; CUDA</h3>
+                    <div id="driver-info" class="info-list"><div class="info-row"><span class="info-key">Loading...</span></div></div>
+                </div>
+                <div class="system-info-card">
+                    <h3>💻 Operating System</h3>
+                    <div id="os-info" class="info-list"><div class="info-row"><span class="info-key">Loading...</span></div></div>
+                </div>
+                <div class="system-info-card">
+                    <h3>🐍 Python &amp; Libraries</h3>
+                    <div id="python-info" class="info-list"><div class="info-row"><span class="info-key">Loading...</span></div></div>
+                </div>
+            </div>
+
+            <h2 style="margin-top:25px">🎮 GPU Details</h2>
+            <div id="gpu-details-grid" class="gpu-details-grid"></div>
+
+            <h2 style="margin-top:25px">🏥 Health Check</h2>
+            <div class="health-check-panel">
+                <button class="btn btn-primary" onclick="runHealthCheck()">▶ Run Full Health Check</button>
+                <button class="btn btn-secondary" onclick="loadSystemInfo()" style="margin-left:10px">🔄 Refresh Info</button>
+                <div id="health-results" class="health-results">
+                    <p class="no-data">Click "Run Full Health Check" to diagnose your GPUs</p>
+                </div>
+            </div>
+
+            <h2 style="margin-top:25px">📦 Installation Help</h2>
+            <div class="install-help-grid">
+                <div class="install-card">
+                    <h3>🖥️ Install NVIDIA Drivers</h3>
+                    <div class="code-block"><pre>sudo ubuntu-drivers autoinstall
+# Or specific version:
+sudo apt install nvidia-driver-565
+# After install:
+sudo reboot</pre><button class="copy-btn" onclick="copyCode(this)">📋 Copy</button></div>
+                </div>
+                <div class="install-card">
+                    <h3>⚡ Install CUDA Toolkit</h3>
+                    <div class="code-block"><pre>wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+sudo apt-get -y install cuda-toolkit-12-8</pre><button class="copy-btn" onclick="copyCode(this)">📋 Copy</button></div>
+                </div>
+                <div class="install-card">
+                    <h3>🚀 Install CuPy (GPU Stress)</h3>
+                    <div class="code-block"><pre>sudo /opt/nvidia-gpu-benchmark/venv/bin/pip install cupy-cuda12x
+# Then restart service:
+sudo ./restart_service.sh</pre><button class="copy-btn" onclick="copyCode(this)">📋 Copy</button></div>
+                </div>
+                <div class="install-card">
+                    <h3>🔄 Restart Service</h3>
+                    <div class="code-block"><pre>sudo ./restart_service.sh
+# Check status:
+sudo systemctl status nvidia-gpu-benchmark
+# View logs:
+sudo journalctl -u nvidia-gpu-benchmark -f</pre><button class="copy-btn" onclick="copyCode(this)">📋 Copy</button></div>
+                </div>
+                <div class="install-card">
+                    <h3>🔍 Diagnostics</h3>
+                    <div class="code-block"><pre>nvidia-smi
+nvidia-smi -l 2  # Monitor every 2s
+nvcc --version
+python3 -c "import cupy; cupy.show_config()"</pre><button class="copy-btn" onclick="copyCode(this)">📋 Copy</button></div>
+                </div>
+                <div class="install-card">
+                    <h3>🩺 Check GPU Errors</h3>
+                    <div class="code-block"><pre>nvidia-smi --query-gpu=gpu_uuid,ecc.errors.corrected.volatile.total,ecc.errors.uncorrected.volatile.total --format=csv
+# Stress test logs:
+tail -f /tmp/gpu_stress_0.log</pre><button class="copy-btn" onclick="copyCode(this)">📋 Copy</button></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- TAB 4: RESULTS -->
+    <div class="tab-content" id="tab-results">
+        <div class="results-panel">
+            <div class="results-header">
+                <h2>📈 Benchmark Results</h2>
+                <div class="results-actions">
+                    <button class="btn btn-primary" onclick="loadResults()">🔄 Refresh</button>
+                    <button class="btn btn-secondary" onclick="clearResults()">🗑️ Clear</button>
+                </div>
+            </div>
+            <div id="results-container">
+                <p class="no-data">No completed benchmarks yet. Run a benchmark to see results here.</p>
+            </div>
+        </div>
+    </div>
+</div>
+<script src="/static/js/app.js"></script>
 </body>
 </html>

@@ -71,6 +71,20 @@ pip install -r requirements.txt
 
 echo "✓ Python dependencies installed"
 
+# Install CuPy for GPU stress testing
+echo ""
+echo "🚀 Installing CuPy (GPU stress testing library)..."
+CUDA_VER=$(nvidia-smi | grep -oP 'CUDA Version: \K[0-9]+' | head -1)
+echo "   Detected CUDA major version: $CUDA_VER"
+if pip install cupy-cuda12x -q 2>/dev/null; then
+    echo "✓ CuPy installed (cuda12x)"
+elif pip install cupy-cuda11x -q 2>/dev/null; then
+    echo "✓ CuPy installed (cuda11x)"
+else
+    echo "⚠️  CuPy not installed (GPU stress will use CPU fallback)"
+    echo "   Manual install: pip install cupy-cuda12x"
+fi
+
 # Create logs directory
 mkdir -p logs
 

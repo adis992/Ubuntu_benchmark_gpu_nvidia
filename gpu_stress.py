@@ -57,22 +57,28 @@ class GPUStressTester:
             
             start_time = time.time()
             
+            # PRE-ALLOCATE matrices once to avoid repeated OOM crashes
+            try:
+                a = cp.random.random((size, size), dtype=cp.float32)
+                b = cp.random.random((size, size), dtype=cp.float32)
+                c = cp.zeros((size, size), dtype=cp.float32)
+            except cp.cuda.memory.OutOfMemoryError:
+                size = max(512, size // 2)
+                print(f"OOM: reduced matrix size to {size}x{size}")
+                a = cp.random.random((size, size), dtype=cp.float32)
+                b = cp.random.random((size, size), dtype=cp.float32)
+                c = cp.zeros((size, size), dtype=cp.float32)
+
             while self.running:
                 try:
-                    # Create random matrices
-                    a = cp.random.random((size, size), dtype=cp.float32)
-                    b = cp.random.random((size, size), dtype=cp.float32)
+                    # In-place matrix multiply (no new allocations)
+                    cp.matmul(a, b, out=c)
                     
-                    # Matrix multiplication
-                    c = cp.matmul(a, b)
+                    # Element-wise operations (in-place)
+                    cp.sqrt(c, out=c)
                     
-                    # Element-wise operations
-                    d = cp.sqrt(c)
-                    e = cp.sin(d)
-                    f = cp.exp(e / 10)
-                    
-                    # Reduction operations
-                    result = cp.sum(f)
+                    # Reduction
+                    result = float(cp.sum(c))
                     
                     # Synchronize to ensure operations complete
                     cp.cuda.Stream.null.synchronize()

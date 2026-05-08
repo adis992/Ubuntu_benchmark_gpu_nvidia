@@ -11,6 +11,9 @@ import time
 import json
 import logging
 import os
+import sys
+import platform
+import subprocess
 from datetime import datetime
 
 from gpu_monitor import GPUMonitor
@@ -131,13 +134,19 @@ def api_benchmark_start():
     gpu_indices = data.get('gpu_indices', [])
     duration = data.get('duration', config['benchmark']['default_duration'])
     stress_level = data.get('stress_level', 100)
+    workload_type = data.get('workload_type', 'mixed')
+    precision = data.get('precision', 'fp32')
+    memory_level = data.get('memory_level', 50)
     
     # Validate duration
     max_duration = config['benchmark']['max_duration']
     if duration > max_duration:
         return jsonify({'error': f'Duration exceeds maximum of {max_duration} seconds'}), 400
     
-    result = benchmark_workload.start_benchmark(gpu_indices, duration, stress_level)
+    result = benchmark_workload.start_benchmark(
+        gpu_indices, duration, stress_level,
+        workload_type=workload_type, precision=precision, memory_level=memory_level
+    )
     
     if result['success']:
         return jsonify(result)
@@ -230,6 +239,23 @@ def api_config_update():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/benchmarks/results')
+def api_benchmark_results():
+    """Get completed benchmark results with metrics history"""
+    results = {}
+    for bid, r in benchmark_workload.benchmark_results.items():
+        safe = {}
+        for k, v in r.items():
+            if k == 'processes':
+                continue
+            if hasattr(v, 'isoformat'):
+                safe[k] = v.isoformat()
+            else:
+                safe[k] = v
+        results[bid] = safe
+    return jsonify(results)
+
+
 # WebSocket events
 @socketio.on('connect')
 def handle_connect():
@@ -275,6 +301,107 @@ def shutdown_handler():
     monitoring_active = False
     gpu_monitor.shutdown()
     logger.info("Server shutting down...")
+
+
+@app.route('/api/system/info')
+def api_system_info():
+    """Get system information: driver, CUDA, Python, CuPy"""
+    info = {
+        'os': platform.platform(),
+        'hostname': platform.node(),
+        'python': sys.version.split()[0],
+        'driver_version': 'N/A',
+        'cuda_version': 'N/A',
+        'cupy_version': 'N/A',
+        'cupy_installed': False,
+        'nvml_version': 'N/A',
+        'gpu_count': gpu_monitor.gpu_count,
+    }
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            info['driver_version'] = result.stdout.strip().split('\n')[0]
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name,memory.total,compute_cap',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            gpus = []
+            for line in result.stdout.strip().split('\n'):
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 3:
+                    gpus.append({'name': parts[0], 'vram_mb': parts[1], 'compute_cap': parts[2]})
+            info['gpu_list'] = gpus
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(
+            ['nvidia-smi'], capture_output=True, text=True, timeout=5
+        )
+        import re
+        match = re.search(r'CUDA Version:\s*([0-9.]+)', result.stdout)
+        if match:
+            info['cuda_version'] = match.group(1)
+    except Exception:
+        pass
+    try:
+        import cupy
+        info['cupy_version'] = cupy.__version__
+        info['cupy_installed'] = True
+    except ImportError:
+        info['cupy_installed'] = False
+    try:
+        from pynvml import nvmlSystemGetDriverVersion
+        info['nvml_version'] = nvmlSystemGetDriverVersion().decode()
+    except Exception:
+        pass
+    return jsonify(info)
+
+
+@app.route('/api/system/health')
+def api_system_health():
+    """Run GPU health check"""
+    results = []
+    for i in range(gpu_monitor.gpu_count):
+        gpu_result = {'gpu_index': i, 'checks': [], 'status': 'ok'}
+        try:
+            info = gpu_monitor.get_gpu_info(i)
+            if info:
+                checks = [
+                    ('Temperature readable', info['temperature'] is not None),
+                    ('Utilization readable', info['utilization']['gpu'] is not None),
+                    ('Memory readable', info['memory']['used_mb'] is not None),
+                    ('Power readable', info['power']['usage'] is not None),
+                    ('Clock readable', info['clocks']['graphics'] is not None),
+                    ('Temperature sane', 0 < info['temperature'] < 120),
+                    ('Memory sane', info['memory']['used_mb'] >= 0),
+                ]
+                for name, ok in checks:
+                    gpu_result['checks'].append({'name': name, 'ok': ok})
+                    if not ok:
+                        gpu_result['status'] = 'warning'
+                gpu_result['name'] = info.get('name', f'GPU {i}')
+            else:
+                gpu_result['status'] = 'error'
+                gpu_result['error'] = 'Could not read GPU info'
+        except Exception as e:
+            gpu_result['status'] = 'error'
+            gpu_result['error'] = str(e)
+        results.append(gpu_result)
+    cupy_ok = False
+    try:
+        import cupy
+        cupy_ok = True
+    except ImportError:
+        pass
+    return jsonify({'gpus': results, 'cupy_installed': cupy_ok, 'timestamp': datetime.now().isoformat()})
 
 
 if __name__ == '__main__':

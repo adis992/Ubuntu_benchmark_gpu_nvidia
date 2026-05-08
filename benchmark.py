@@ -25,7 +25,9 @@ class BenchmarkWorkload:
         self.benchmark_results = {}
         self.crash_detector = CrashDetector()
     
-    def start_benchmark(self, gpu_indices: List[int], duration: int, stress_level: int = 100) -> Dict:
+    def start_benchmark(self, gpu_indices: List[int], duration: int,
+                        stress_level: int = 100, workload_type: str = 'mixed',
+                        precision: str = 'fp32', memory_level: int = 50) -> Dict:
         """Start benchmark on specified GPUs"""
         benchmark_id = f"bench_{int(time.time())}"
         
@@ -37,14 +39,18 @@ class BenchmarkWorkload:
             if idx in self.active_benchmarks:
                 return {"success": False, "error": f"GPU {idx} is already being benchmarked"}
         
-        # Validate stress level
+        # Validate inputs
         stress_level = max(1, min(100, stress_level))
+        memory_level = max(0, min(100, memory_level))
         
         # Initialize benchmark data
         self.active_benchmarks[benchmark_id] = {
             "gpu_indices": gpu_indices,
             "duration": duration,
             "stress_level": stress_level,
+            "workload_type": workload_type,
+            "precision": precision,
+            "memory_level": memory_level,
             "start_time": datetime.now(),
             "end_time": datetime.now() + timedelta(seconds=duration),
             "status": "running",
@@ -56,23 +62,28 @@ class BenchmarkWorkload:
         # Start benchmark thread
         thread = threading.Thread(
             target=self._run_benchmark,
-            args=(benchmark_id, gpu_indices, duration, stress_level),
+            args=(benchmark_id, gpu_indices, duration, stress_level, workload_type, precision, memory_level),
             daemon=True
         )
         thread.start()
         self.benchmark_threads[benchmark_id] = thread
         
-        logger.info(f"Started benchmark {benchmark_id} on GPUs {gpu_indices} for {duration}s at {stress_level}% stress")
+        logger.info(f"Started benchmark {benchmark_id} on GPUs {gpu_indices} for {duration}s "
+                    f"at {stress_level}% stress, type={workload_type}, precision={precision}")
         
         return {
             "success": True,
             "benchmark_id": benchmark_id,
             "gpu_indices": gpu_indices,
             "duration": duration,
-            "stress_level": stress_level
+            "stress_level": stress_level,
+            "workload_type": workload_type,
+            "precision": precision
         }
     
-    def _run_benchmark(self, benchmark_id: str, gpu_indices: List[int], duration: int, stress_level: int):
+    def _run_benchmark(self, benchmark_id: str, gpu_indices: List[int], duration: int,
+                       stress_level: int, workload_type: str = 'mixed',
+                       precision: str = 'fp32', memory_level: int = 50):
         """Run the actual benchmark workload"""
         start_time = time.time()
         processes = []
@@ -80,21 +91,49 @@ class BenchmarkWorkload:
         try:
             # Start GPU stress process for each GPU
             for gpu_idx in gpu_indices:
-                process = self._start_gpu_stress(gpu_idx, stress_level)
+                process = self._start_gpu_stress(gpu_idx, stress_level, workload_type, precision, memory_level)
                 if process:
                     processes.append((gpu_idx, process))
                     self.active_benchmarks[benchmark_id]["processes"].append(process)
             
+            # Initialize metrics history
+            self.active_benchmarks[benchmark_id]["metrics_history"] = []
+            self.active_benchmarks[benchmark_id]["metrics_labels"] = []
+
             # Monitor benchmark
             while time.time() - start_time < duration and not self.stop_flags.get(benchmark_id, False):
                 time.sleep(1)
-                
+                elapsed_sec = time.time() - start_time
+
+                # Record per-GPU metrics snapshot
+                snapshot = {"ts": round(elapsed_sec, 1), "gpus": []}
+                for gpu_idx in gpu_indices:
+                    try:
+                        info = self.gpu_monitor.get_gpu_info(gpu_idx)
+                        snapshot["gpus"].append({
+                            "gpu": gpu_idx,
+                            "temp": info.get("temperature", 0),
+                            "util": info.get("utilization", {}).get("gpu", 0),
+                            "power": round(info.get("power", {}).get("usage", 0), 1),
+                            "fan": info.get("fan_speed", 0),
+                            "mem_pct": round(info.get("memory", {}).get("percent", 0), 1),
+                            "clock": info.get("clocks", {}).get("graphics", 0),
+                        })
+                    except Exception:
+                        pass
+                if snapshot["gpus"]:
+                    self.active_benchmarks[benchmark_id]["metrics_history"].append(snapshot)
+
                 # Check thermal safety
                 for gpu_idx in gpu_indices:
-                    safety = self.gpu_monitor.check_thermal_safety(
-                        gpu_idx,
-                        self.config.get("safety", {}).get("max_temperature", 100)
-                    )
+                    try:
+                        safety = self.gpu_monitor.check_thermal_safety(
+                            gpu_idx,
+                            self.config.get("safety", {}).get("max_temperature", 100)
+                        )
+                    except Exception as e:
+                        logger.error(f"Error checking thermal safety for GPU {gpu_idx}: {e}")
+                        continue
                     
                     if not safety["safe"]:
                         logger.warning(f"Thermal safety issue on GPU {gpu_idx}: {safety['reason']}")
@@ -157,47 +196,115 @@ class BenchmarkWorkload:
                 self.active_benchmarks[benchmark_id]["status"] = "error"
                 self.active_benchmarks[benchmark_id]["error"] = str(e)
     
-    def _start_gpu_stress(self, gpu_idx: int, stress_level: int) -> Optional[subprocess.Popen]:
+    def _start_gpu_stress(self, gpu_idx: int, stress_level: int,
+                          workload_type: str = 'mixed', precision: str = 'fp32',
+                          memory_level: int = 50) -> Optional[subprocess.Popen]:
         """Start GPU stress test process"""
         try:
-            # Use nvidia-smi to create GPU load
-            # This is a simple approach - for production, use CUDA kernels
+            dtype_map = {'fp32': 'cp.float32', 'fp16': 'cp.float16'}
+            dtype_str = dtype_map.get(precision, 'cp.float32')
+            # Matrix size: 1024-4096 based on stress level (safe for 24GB VRAM)
+            compute_size = int(1024 + (3072 * stress_level / 100))
+            # Memory chunk: 100-1000 MB
+            memory_mb = int(100 + (900 * memory_level / 100))
+
             stress_script = f"""
-import time
-import numpy as np
+import time, sys, os
+
+def run_compute(cp, size, dtype):
+    # PRE-ALLOCATE ONCE - avoids OOM crash from repeated large allocations
+    try:
+        a = cp.random.random((size, size), dtype=dtype)
+        b = cp.random.random((size, size), dtype=dtype)
+        c = cp.zeros((size, size), dtype=dtype)
+    except cp.cuda.memory.OutOfMemoryError:
+        size = max(512, size // 2)
+        a = cp.random.random((size, size), dtype=dtype)
+        b = cp.random.random((size, size), dtype=dtype)
+        c = cp.zeros((size, size), dtype=dtype)
+    it = 0
+    while True:
+        try:
+            cp.matmul(a, b, out=c)
+            cp.sqrt(c, out=c)
+            cp.sin(c, out=c)
+            cp.cuda.Stream.null.synchronize()
+            it += 1
+            # Refresh inputs every 100 iterations only
+            if it % 100 == 0:
+                cp.random.random((size, size), out=a)
+            delay = max(0.0, (100 - {stress_level}) / 2000.0)
+            if delay > 0:
+                time.sleep(delay)
+        except cp.cuda.memory.OutOfMemoryError:
+            size = max(512, size // 2)
+            a = cp.random.random((size, size), dtype=dtype)
+            b = cp.random.random((size, size), dtype=dtype)
+            c = cp.zeros((size, size), dtype=dtype)
+            time.sleep(0.5)
+        except Exception as e:
+            time.sleep(0.1)
+
+def run_memory(cp, memory_mb):
+    n = min(memory_mb * 1024 * 1024 // 4, 256 * 1024 * 1024)
+    try:
+        buf = cp.zeros(n, dtype=cp.float32)
+        while True:
+            try:
+                cp.random.random(n, out=buf)
+                _ = cp.sum(buf)
+                cp.cuda.Stream.null.synchronize()
+                time.sleep(0.002)
+            except Exception:
+                time.sleep(0.1)
+    except cp.cuda.memory.OutOfMemoryError:
+        time.sleep(0.5)
+
 try:
     import cupy as cp
-    # CuPy stress test
-    size = int(8192 * ({stress_level}/100))
-    while True:
-        a = cp.random.random((size, size), dtype=cp.float32)
-        b = cp.random.random((size, size), dtype=cp.float32)
-        c = cp.matmul(a, b)
-        cp.cuda.Stream.null.synchronize()
-        time.sleep(0.001)
+    cp.cuda.Device({gpu_idx}).use()
+    wtype = "{workload_type}"
+    dtype = {dtype_str}
+    size = {compute_size}
+    mem_mb = {memory_mb}
+    if wtype == 'compute':
+        run_compute(cp, size, dtype)
+    elif wtype == 'memory':
+        run_memory(cp, mem_mb)
+    else:
+        import threading
+        t = threading.Thread(target=run_memory, args=(cp, mem_mb // 2), daemon=True)
+        t.start()
+        run_compute(cp, size, dtype)
 except ImportError:
-    # Fallback: use nvidia-smi to create some load
-    import subprocess
+    import numpy as np
+    size = 1024
+    a = np.random.random((size, size)).astype(np.float32)
+    b = np.random.random((size, size)).astype(np.float32)
     while True:
-        subprocess.run(['nvidia-smi', '-i', str({gpu_idx}), '-q'], capture_output=True)
-        time.sleep(0.1)
+        try:
+            np.dot(a, b)
+            time.sleep(0.01)
+        except Exception:
+            time.sleep(0.1)
+except Exception as e:
+    print(f"Fatal: {{e}}", file=sys.stderr)
+    sys.exit(1)
 """
-            
-            # Write stress script to temp file
             script_path = f"/tmp/gpu_stress_{gpu_idx}_{int(time.time())}.py"
             with open(script_path, 'w') as f:
                 f.write(stress_script)
-            
-            # Set CUDA_VISIBLE_DEVICES to target specific GPU
+
             env = os.environ.copy()
             env['CUDA_VISIBLE_DEVICES'] = str(gpu_idx)
-            
-            # Start process
+            env['CUPY_GPU_MEMORY_LIMIT'] = '22G'
+
+            log_path = f"/tmp/gpu_stress_{gpu_idx}.log"
             process = subprocess.Popen(
-                ['python3', script_path],
+                [sys.executable, script_path],
                 env=env,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=open(log_path, 'w')
             )
             
             logger.info(f"Started GPU stress process for GPU {gpu_idx} (PID: {process.pid})")
