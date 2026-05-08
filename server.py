@@ -420,4 +420,4 @@ if __name__ == '__main__':
     logger.info(f"Starting GPU Benchmark Server on {host}:{port}")
     logger.info(f"Dashboard URL: http://localhost:{port}")
     
-    socketio.run(app, host=host, port=port, debug=False)
+    socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)

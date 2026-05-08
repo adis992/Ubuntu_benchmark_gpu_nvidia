@@ -31,6 +31,18 @@ fi
 
 echo "✓ NVIDIA drivers detected"
 
+# Kill any existing servers before starting
+echo ""
+echo "🔪 Stopping any running servers..."
+systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+pkill -9 -f "python3.*server.py" 2>/dev/null || true
+pkill -9 -f "server.py" 2>/dev/null || true
+sleep 2
+fuser -k 5000/tcp 2>/dev/null || true
+fuser -k 5001/tcp 2>/dev/null || true
+sleep 2
+echo "✓ Ports 5000/5001 cleared"
+
 # Check for Python 3
 if ! command -v python3 &> /dev/null; then
     echo "❌ Python 3 not found. Please install Python 3.8 or higher."

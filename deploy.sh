@@ -13,8 +13,13 @@ SERVICE="nvidia-gpu-benchmark"
 INSTALL_DIR="/opt/nvidia-gpu-benchmark"
 
 echo "=== Stopping all old servers ==="
-pkill -f "python3.*server.py" 2>/dev/null || true
 systemctl stop "$SERVICE" 2>/dev/null || true
+pkill -9 -f "python3.*server.py" 2>/dev/null || true
+pkill -9 -f "server.py" 2>/dev/null || true
+sleep 2
+# Force free ports 5000 and 5001
+fuser -k 5000/tcp 2>/dev/null || true
+fuser -k 5001/tcp 2>/dev/null || true
 sleep 2
 echo "Done"
 
