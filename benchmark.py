@@ -15,6 +15,111 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 
+class _StressWorker:
+    """Runs GPU stress directly in a daemon thread. Mimics subprocess.Popen interface."""
+
+    def __init__(self, gpu_idx, stress_level, workload_type, np_dtype, compute_size, memory_mb):
+        self.gpu_idx      = gpu_idx
+        self.stress_level = stress_level
+        self.workload_type = workload_type
+        self.np_dtype     = np_dtype
+        self.compute_size = compute_size
+        self.memory_mb    = memory_mb
+        self._stop        = False
+        self._thread      = None
+        self.returncode   = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        try:
+            import cupy as cp
+            cp.cuda.Device(self.gpu_idx).use()
+            logger.info(f"GPU {self.gpu_idx} stress thread active, "
+                        f"size={self.compute_size}, type={self.workload_type}")
+            if self.workload_type == 'compute':
+                self._compute(cp)
+            elif self.workload_type == 'memory':
+                self._memory(cp)
+            else:
+                mem_t = threading.Thread(
+                    target=self._memory, args=(cp,), daemon=True)
+                mem_t.start()
+                self._compute(cp)
+        except Exception as e:
+            logger.error(f"GPU {self.gpu_idx} stress error: {e}")
+        finally:
+            self.returncode = 0
+
+    def _compute(self, cp):
+        size  = self.compute_size
+        dtype = getattr(cp, self.np_dtype)
+        try:
+            a = cp.random.random((size, size), dtype=dtype)
+            b = cp.random.random((size, size), dtype=dtype)
+            c = cp.zeros((size, size), dtype=dtype)
+        except cp.cuda.memory.OutOfMemoryError:
+            size = max(512, size // 2)
+            a = cp.random.random((size, size), dtype=dtype)
+            b = cp.random.random((size, size), dtype=dtype)
+            c = cp.zeros((size, size), dtype=dtype)
+        it = 0
+        delay = max(0.0, (100 - self.stress_level) / 2000.0)
+        while not self._stop:
+            try:
+                cp.matmul(a, b, out=c)
+                cp.sqrt(c, out=c)
+                cp.sin(c, out=c)
+                cp.cuda.Stream.null.synchronize()
+                it += 1
+                if it % 100 == 0:
+                    cp.random.random((size, size), out=a)
+                if delay > 0:
+                    time.sleep(delay)
+            except cp.cuda.memory.OutOfMemoryError:
+                size = max(512, size // 2)
+                a = cp.random.random((size, size), dtype=dtype)
+                b = cp.random.random((size, size), dtype=dtype)
+                c = cp.zeros((size, size), dtype=dtype)
+                time.sleep(0.5)
+            except Exception:
+                time.sleep(0.1)
+
+    def _memory(self, cp):
+        n = min(self.memory_mb * 1024 * 1024 // 4, 256 * 1024 * 1024)
+        try:
+            buf = cp.zeros(n, dtype=cp.float32)
+            while not self._stop:
+                try:
+                    cp.random.random(n, out=buf)
+                    _ = cp.sum(buf)
+                    cp.cuda.Stream.null.synchronize()
+                    time.sleep(0.002)
+                except Exception:
+                    time.sleep(0.1)
+        except Exception:
+            time.sleep(0.5)
+
+    # subprocess.Popen-compatible interface
+    def poll(self):
+        if self._thread and not self._thread.is_alive():
+            if self.returncode is None:
+                self.returncode = 0
+        return self.returncode
+
+    def terminate(self):
+        self._stop = True
+
+    def kill(self):
+        self._stop = True
+
+    def wait(self, timeout=None):
+        if self._thread:
+            self._thread.join(timeout=timeout)
+
+
 class BenchmarkWorkload:
     def __init__(self, gpu_monitor, config):
         self.gpu_monitor = gpu_monitor
@@ -198,126 +303,21 @@ class BenchmarkWorkload:
     
     def _start_gpu_stress(self, gpu_idx: int, stress_level: int,
                           workload_type: str = 'mixed', precision: str = 'fp32',
-                          memory_level: int = 50) -> Optional[subprocess.Popen]:
-        """Start GPU stress test process"""
+                          memory_level: int = 50):
+        """Start GPU stress directly in a thread (no subprocess, no env issues)"""
         try:
-            dtype_map = {'fp32': 'cp.float32', 'fp16': 'cp.float16'}
-            dtype_str = dtype_map.get(precision, 'cp.float32')
-            # Matrix size: 1024-4096 based on stress level (safe for 24GB VRAM)
             compute_size = int(1024 + (3072 * stress_level / 100))
-            # Memory chunk: 100-1000 MB
-            memory_mb = int(100 + (900 * memory_level / 100))
+            memory_mb   = int(100  + (900  * memory_level  / 100))
+            dtype_map   = {'fp16': 'float16'}
+            np_dtype    = dtype_map.get(precision, 'float32')
 
-            stress_script = f"""
-import time, sys, os
+            worker = _StressWorker(gpu_idx, stress_level, workload_type, np_dtype,
+                                   compute_size, memory_mb)
+            worker.start()
+            logger.info(f"Started GPU stress thread for GPU {gpu_idx} "
+                        f"(size={compute_size}, mem={memory_mb}MB, type={workload_type})")
+            return worker
 
-def run_compute(cp, size, dtype):
-    # PRE-ALLOCATE ONCE - avoids OOM crash from repeated large allocations
-    try:
-        a = cp.random.random((size, size), dtype=dtype)
-        b = cp.random.random((size, size), dtype=dtype)
-        c = cp.zeros((size, size), dtype=dtype)
-    except cp.cuda.memory.OutOfMemoryError:
-        size = max(512, size // 2)
-        a = cp.random.random((size, size), dtype=dtype)
-        b = cp.random.random((size, size), dtype=dtype)
-        c = cp.zeros((size, size), dtype=dtype)
-    it = 0
-    while True:
-        try:
-            cp.matmul(a, b, out=c)
-            cp.sqrt(c, out=c)
-            cp.sin(c, out=c)
-            cp.cuda.Stream.null.synchronize()
-            it += 1
-            # Refresh inputs every 100 iterations only
-            if it % 100 == 0:
-                cp.random.random((size, size), out=a)
-            delay = max(0.0, (100 - {stress_level}) / 2000.0)
-            if delay > 0:
-                time.sleep(delay)
-        except cp.cuda.memory.OutOfMemoryError:
-            size = max(512, size // 2)
-            a = cp.random.random((size, size), dtype=dtype)
-            b = cp.random.random((size, size), dtype=dtype)
-            c = cp.zeros((size, size), dtype=dtype)
-            time.sleep(0.5)
-        except Exception as e:
-            time.sleep(0.1)
-
-def run_memory(cp, memory_mb):
-    n = min(memory_mb * 1024 * 1024 // 4, 256 * 1024 * 1024)
-    try:
-        buf = cp.zeros(n, dtype=cp.float32)
-        while True:
-            try:
-                cp.random.random(n, out=buf)
-                _ = cp.sum(buf)
-                cp.cuda.Stream.null.synchronize()
-                time.sleep(0.002)
-            except Exception:
-                time.sleep(0.1)
-    except cp.cuda.memory.OutOfMemoryError:
-        time.sleep(0.5)
-
-import sys as _sys
-print(f"GPU stress starting: gpu_idx={gpu_idx} CUDA_VISIBLE_DEVICES={{os.environ.get('CUDA_VISIBLE_DEVICES')}}", file=_sys.stderr, flush=True)
-try:
-    import cupy as cp
-    # CUDA_VISIBLE_DEVICES already selects the physical GPU - always use device 0
-    cp.cuda.Device(0).use()
-    print(f"CuPy device 0 active (physical GPU {gpu_idx})", file=_sys.stderr, flush=True)
-    wtype = "{workload_type}"
-    dtype = {dtype_str}
-    size = {compute_size}
-    mem_mb = {memory_mb}
-    print(f"workload={{wtype}} size={{size}} mem={{mem_mb}}MB", file=_sys.stderr, flush=True)
-    if wtype == 'compute':
-        run_compute(cp, size, dtype)
-    elif wtype == 'memory':
-        run_memory(cp, mem_mb)
-    else:
-        import threading
-        t = threading.Thread(target=run_memory, args=(cp, mem_mb // 2), daemon=True)
-        t.start()
-        run_compute(cp, size, dtype)
-except ImportError as e:
-    print(f"CuPy not available: {{e}} - using numpy CPU fallback", file=_sys.stderr, flush=True)
-    import numpy as np
-    size = 1024
-    a = np.random.random((size, size)).astype(np.float32)
-    b = np.random.random((size, size)).astype(np.float32)
-    while True:
-        try:
-            np.dot(a, b)
-            time.sleep(0.01)
-        except Exception:
-            time.sleep(0.1)
-except Exception as e:
-    print(f"Fatal: {{e}}", file=_sys.stderr, flush=True)
-    import traceback
-    traceback.print_exc(file=_sys.stderr)
-    _sys.exit(1)
-"""
-            script_path = f"/tmp/gpu_stress_{gpu_idx}_{int(time.time())}.py"
-            with open(script_path, 'w') as f:
-                f.write(stress_script)
-
-            env = os.environ.copy()
-            env['CUDA_VISIBLE_DEVICES'] = str(gpu_idx)
-            env['CUPY_GPU_MEMORY_LIMIT'] = '22G'
-
-            log_path = f"/tmp/gpu_stress_{gpu_idx}.log"
-            process = subprocess.Popen(
-                [sys.executable, script_path],
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=open(log_path, 'w')
-            )
-            
-            logger.info(f"Started GPU stress process for GPU {gpu_idx} (PID: {process.pid})")
-            return process
-        
         except Exception as e:
             logger.error(f"Failed to start GPU stress for GPU {gpu_idx}: {e}")
             return None
