@@ -1,4 +1,4 @@
-🎮 NVIDIA GPU Benchmark Tool
+🎮 NVIDIA GPU Benchmark Tool for Ubuntu - Linux System
 🚀 Quick Start
 # NVIDIA GPU Benchmark Tool
 
