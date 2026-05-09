@@ -41,9 +41,9 @@ If installed on a remote server, ensure port 5000 is reachable from browser.
 
 ## Dashboard Preview
 
+![Dashboard Screenshot 3](Screenshot%20from%202026-05-09%2010-15-40.png)
 ![Dashboard Screenshot 1](Screenshot%20from%202026-05-09%2010-15-01.png)
 ![Dashboard Screenshot 2](Screenshot%20from%202026-05-09%2010-15-10.png)
-![Dashboard Screenshot 3](Screenshot%20from%202026-05-09%2010-15-40.png)
 ![Dashboard Screenshot 4](Screenshot%20from%202026-05-09%2010-16-40.png)
 
 ## Features
