@@ -65,6 +65,11 @@
                     <input type="range" id="memory-level" min="0" max="100" value="50">
                     <span id="memory-value">50%</span>
                 </div>
+                <div class="control-group">
+                    <label for="power-limit">⚡ Power Limit (W): <span id="power-limit-value">300 W</span></label>
+                    <input type="range" id="power-limit" min="50" max="450" value="300" step="10">
+                    <small style="color:var(--text2);font-size:11px">RTX 3090: ~100–390 W typical range</small>
+                </div>
                 <div class="control-group span-2">
                     <button id="start-benchmark" class="btn btn-primary">🚀 Start Benchmark</button>
                     <button id="stop-all-benchmarks" class="btn btn-danger">⛔ Stop All</button>
@@ -97,6 +102,16 @@
                 <div class="safety-item">
                     <button id="save-config" class="btn btn-secondary">💾 Save Settings</button>
                 </div>
+            </div>
+        </div>
+
+        <div class="fan-panel">
+            <h2>🌀 Fan Control</h2>
+            <div class="fan-curve-info">
+                <strong>Auto Curve:</strong> &lt;50°C → 30% &nbsp;|&nbsp; 50°C → 55% &nbsp;|&nbsp; 75°C → 80% &nbsp;|&nbsp; 95°C → 100% &nbsp;(linear +1%/°C)
+            </div>
+            <div id="fan-controls-container" class="fan-controls-grid">
+                <p class="no-data">Waiting for GPU data...</p>
             </div>
         </div>
 

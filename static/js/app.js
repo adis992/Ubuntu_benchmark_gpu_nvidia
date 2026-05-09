@@ -11,6 +11,9 @@ let charts = {};
 // Log stores
 const logStores = { system: [], temperature: [], fan: [], warnings: [], benchmark: [] };
 
+// Auto fan curve state
+let autoFanStatus = {};
+
 // DOM refs
 const connectionStatus = document.getElementById('connection-status');
 const connectionText = document.getElementById('connection-text');
@@ -23,6 +26,8 @@ const stressLevel = document.getElementById('stress-level');
 const stressValue = document.getElementById('stress-value');
 const memoryLevel = document.getElementById('memory-level');
 const memoryValue = document.getElementById('memory-value');
+const powerLimitSlider = document.getElementById('power-limit');
+const powerLimitValue = document.getElementById('power-limit-value');
 
 document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
@@ -66,6 +71,7 @@ socket.on('connect', () => {
     connectionText.textContent = 'Connected';
     addLog('system', 'info', 'Connected to server');
     socket.emit('start_monitoring');
+    loadFanAutoStatus();
 });
 
 socket.on('disconnect', () => {
@@ -325,6 +331,7 @@ function exportLogs() {
 function setupEventListeners() {
     stressLevel.addEventListener('input', e => { stressValue.textContent = e.target.value + '%'; });
     memoryLevel.addEventListener('input', e => { memoryValue.textContent = e.target.value + '%'; });
+    powerLimitSlider.addEventListener('input', e => { powerLimitValue.textContent = e.target.value + ' W'; });
     document.getElementById('start-benchmark').addEventListener('click', startBenchmark);
     document.getElementById('stop-all-benchmarks').addEventListener('click', stopAllBenchmarks);
     document.getElementById('save-config').addEventListener('click', saveConfiguration);
@@ -350,6 +357,61 @@ function updateGPUDisplay() {
     }
     gpusContainer.innerHTML = '';
     gpuData.forEach(gpu => gpusContainer.appendChild(createGPUCard(gpu)));
+    renderFanControls();
+    // Update live fan speed displays in fan control panel
+    gpuData.forEach(gpu => {
+        const el = document.getElementById(`fan-speed-live-${gpu.index}`);
+        if (el) el.textContent = gpu.fan_speed + '%';
+        const sl = document.getElementById(`fan-slider-${gpu.index}`);
+        // Only update slider if user isn't actively dragging (no focus)
+        if (sl && document.activeElement !== sl) sl.value = gpu.fan_speed;
+        const sv = document.getElementById(`fan-slider-val-${gpu.index}`);
+        if (sv && document.activeElement !== document.getElementById(`fan-slider-${gpu.index}`)) sv.textContent = gpu.fan_speed + '%';
+    });
+}
+
+function renderFanControls() {
+    const container = document.getElementById('fan-controls-container');
+    if (!container) return;
+    // Only build the cards once (avoid destroying slider while user drags)
+    if (container.querySelector('.fan-gpu-card')) return;
+    container.innerHTML = '';
+    gpuData.forEach(gpu => {
+        const isAuto = autoFanStatus[gpu.index] || false;
+        const card = document.createElement('div');
+        card.className = 'fan-gpu-card';
+        card.id = `fan-card-${gpu.index}`;
+        card.innerHTML = `
+            <div class="fan-gpu-header">
+                <strong>GPU ${gpu.index}: ${gpu.name}</strong>
+                <span class="fan-speed-badge">🌀 <span id="fan-speed-live-${gpu.index}">${gpu.fan_speed}</span>%</span>
+            </div>
+            <div class="fan-mode-row">
+                <button id="fan-auto-btn-${gpu.index}"
+                    class="btn ${isAuto ? 'btn-primary' : 'btn-secondary'}"
+                    onclick="toggleAutoFan(${gpu.index})"
+                    style="font-size:12px;padding:5px 14px">
+                    ${isAuto ? '🟢 Auto Curve ON' : '⬜ Auto Curve OFF'}
+                </button>
+                <span style="font-size:11px;color:var(--text2);margin-left:10px">
+                    ${isAuto ? 'Adjusting fan by temperature automatically' : 'Click to enable temperature tracking'}
+                </span>
+            </div>
+            <div class="fan-manual-row" id="fan-manual-${gpu.index}" style="${isAuto ? 'opacity:0.45;pointer-events:none' : ''}">
+                <label style="font-size:12px;color:var(--text2)">Manual fixed speed:</label>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:5px">
+                    <input type="range" id="fan-slider-${gpu.index}" min="0" max="100" value="${gpu.fan_speed}" step="5"
+                        style="flex:1"
+                        oninput="document.getElementById('fan-slider-val-${gpu.index}').textContent=this.value+'%'">
+                    <span id="fan-slider-val-${gpu.index}" style="font-size:13px;font-weight:700;min-width:40px;color:var(--primary)">${gpu.fan_speed}%</span>
+                    <button class="btn btn-secondary" style="font-size:12px;padding:4px 12px"
+                        onclick="applyManualFan(${gpu.index})">Apply</button>
+                    <button class="btn btn-secondary" style="font-size:12px;padding:4px 12px"
+                        onclick="resetFanControl(${gpu.index})">↺ Reset Auto</button>
+                </div>
+            </div>`;
+        container.appendChild(card);
+    });
 }
 
 function createGPUCard(gpu) {
@@ -385,7 +447,7 @@ function createGPUCard(gpu) {
             </div>
             <div class="stat-item">
                 <div class="stat-label">🔋 Power</div>
-                <div class="stat-value">${gpu.power.usage.toFixed(1)} W</div>
+                <div class="stat-value">${gpu.power.usage.toFixed(1)} / ${gpu.power.limit.toFixed(0)} W</div>
                 <div class="progress-bar"><div class="progress-fill" style="width:${gpu.power.percent}%"></div></div>
             </div>
             <div class="stat-item">
@@ -397,14 +459,6 @@ function createGPUCard(gpu) {
                 <div class="stat-label">⚙️ Clock</div>
                 <div class="stat-value">${gpu.clocks.graphics} MHz</div>
             </div>
-        </div>
-        <div class="fan-control">
-            <div class="fan-control-header">
-                <strong>🌀 Fan Control</strong>
-                <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="resetFanControl(${gpu.index})">Auto</button>
-            </div>
-            <input type="range" class="fan-slider" min="0" max="100" value="${gpu.fan_speed}" onchange="setFanSpeed(${gpu.index}, this.value)">
-            <small style="color:var(--text2);font-size:11px">Fan control requires elevated permissions</small>
         </div>`;
     return card;
 }
@@ -438,6 +492,8 @@ function updateActiveBenchmarks() {
                 <div>📊 GPUs: ${b.gpu_indices.join(', ')}</div>
                 <div>⚡ Stress: ${b.stress_level}%</div>
                 <div>🔧 Type: ${b.workload_type || 'mixed'}</div>
+                <div>🎯 Precision: ${b.precision || 'fp32'}</div>
+                <div>⚡ PL: ${b.power_limit ? b.power_limit + ' W' : 'default'}</div>
                 <div>⏱️ ${elapsed}s / ${b.duration}s (${pct}%)</div>
                 <div>⏳ ${remaining}s left</div>
             </div>
@@ -452,11 +508,11 @@ function updateActiveBenchmarks() {
 // ===== PRESETS =====
 function applyPreset(type) {
     const presets = {
-        light:   { stress: 25, memory: 20, workload: 'compute', precision: 'fp32', duration: 120 },
-        medium:  { stress: 50, memory: 50, workload: 'mixed',   precision: 'fp32', duration: 300 },
-        heavy:   { stress: 75, memory: 75, workload: 'mixed',   precision: 'fp32', duration: 600 },
-        extreme: { stress: 100, memory: 100, workload: 'mixed', precision: 'fp16', duration: 300 },
-        memtest: { stress: 30, memory: 100, workload: 'memory', precision: 'fp32', duration: 300 },
+        light:   { stress: 25,  memory: 20,  workload: 'compute', precision: 'fp32', duration: 120, power: 200 },
+        medium:  { stress: 50,  memory: 50,  workload: 'mixed',   precision: 'fp32', duration: 300, power: 250 },
+        heavy:   { stress: 75,  memory: 75,  workload: 'mixed',   precision: 'fp32', duration: 600, power: 300 },
+        extreme: { stress: 100, memory: 100, workload: 'mixed',   precision: 'fp16', duration: 300, power: 350 },
+        memtest: { stress: 30,  memory: 100, workload: 'memory',  precision: 'fp32', duration: 300, power: 250 },
     };
     const p = presets[type];
     if (!p) return;
@@ -467,7 +523,9 @@ function applyPreset(type) {
     document.getElementById('workload-type').value = p.workload;
     document.getElementById('precision').value = p.precision;
     document.getElementById('duration').value = p.duration;
-    addLog('system', 'info', `Applied preset: ${type} (stress=${p.stress}%, memory=${p.memory}%, type=${p.workload})`);
+    powerLimitSlider.value = p.power;
+    powerLimitValue.textContent = p.power + ' W';
+    addLog('system', 'info', `Applied preset: ${type} (stress=${p.stress}%, memory=${p.memory}%, type=${p.workload}, PL=${p.power}W)`);
 }
 
 // ===== API CALLS =====
@@ -481,8 +539,9 @@ async function startBenchmark() {
         workload_type: document.getElementById('workload-type').value,
         precision: document.getElementById('precision').value,
         memory_level: parseInt(document.getElementById('memory-level').value),
+        power_limit: parseInt(powerLimitSlider.value),
     };
-    addBenchmarkLog('info', `Starting benchmark on GPUs: ${selectedGPUs.join(', ')} | Type: ${body.workload_type} | Stress: ${body.stress_level}%`);
+    addBenchmarkLog('info', `Starting benchmark on GPUs: ${selectedGPUs.join(', ')} | Type: ${body.workload_type} | Stress: ${body.stress_level}% | PL: ${body.power_limit}W`);
     try {
         const res = await fetch('/api/benchmark/start', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
         const data = await res.json();
@@ -514,13 +573,69 @@ async function setFanSpeed(gpuId, speed) {
     } catch(e) { addLog('system', 'error', `Fan error: ${e.message}`); }
 }
 
+async function applyManualFan(gpuId) {
+    const slider = document.getElementById(`fan-slider-${gpuId}`);
+    if (!slider) return;
+    await setFanSpeed(gpuId, parseInt(slider.value));
+}
+
 async function resetFanControl(gpuId) {
     try {
         const res = await fetch('/api/fan/reset', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ gpu_id: gpuId }) });
         const data = await res.json();
-        if (res.ok) addLog('system', 'info', `Fan GPU ${gpuId} set to auto`);
-        else addLog('system', 'error', `Fan reset failed: ${data.error}`);
+        if (res.ok) {
+            autoFanStatus[gpuId] = false;
+            updateFanCardUI(gpuId, false);
+            addLog('system', 'info', `Fan GPU ${gpuId} reset to driver auto`);
+        } else addLog('system', 'error', `Fan reset failed: ${data.error}`);
     } catch(e) { addLog('system', 'error', `Fan error: ${e.message}`); }
+}
+
+async function toggleAutoFan(gpuId) {
+    const current = autoFanStatus[gpuId] || false;
+    const newState = !current;
+    try {
+        const res = await fetch('/api/fan/auto', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ gpu_id: gpuId, enabled: newState })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            autoFanStatus[gpuId] = newState;
+            updateFanCardUI(gpuId, newState);
+            addLog('system', 'info', `GPU ${gpuId} fan curve: ${newState ? 'AUTO ON' : 'AUTO OFF'}`);
+        } else {
+            addLog('system', 'error', `Fan auto failed: ${data.error}`);
+        }
+    } catch(e) { addLog('system', 'error', `Fan error: ${e.message}`); }
+}
+
+function updateFanCardUI(gpuId, isAuto) {
+    const btn = document.getElementById(`fan-auto-btn-${gpuId}`);
+    const manual = document.getElementById(`fan-manual-${gpuId}`);
+    const hint = btn ? btn.nextElementSibling : null;
+    if (btn) {
+        btn.className = `btn ${isAuto ? 'btn-primary' : 'btn-secondary'}`;
+        btn.textContent = isAuto ? '🟢 Auto Curve ON' : '⬜ Auto Curve OFF';
+    }
+    if (hint) hint.textContent = isAuto ? 'Adjusting fan by temperature automatically' : 'Click to enable temperature tracking';
+    if (manual) {
+        manual.style.opacity = isAuto ? '0.45' : '1';
+        manual.style.pointerEvents = isAuto ? 'none' : '';
+    }
+}
+
+async function loadFanAutoStatus() {
+    try {
+        const res = await fetch('/api/fan/auto');
+        if (!res.ok) return;
+        const data = await res.json();
+        Object.entries(data).forEach(([k, v]) => {
+            autoFanStatus[parseInt(k)] = v;
+            updateFanCardUI(parseInt(k), v);
+        });
+    } catch(e) { /* silently ignore */ }
 }
 
 async function saveConfiguration() {
@@ -668,6 +783,7 @@ function buildResultCard(bid, r) {
             <div>🔧 Type: ${r.workload_type || 'mixed'}</div>
             <div>🎯 Precision: ${r.precision || 'fp32'}</div>
             <div>💾 Memory: ${r.memory_level || 50}%</div>
+            <div>⚡ PL: ${r.power_limit ? r.power_limit + ' W' : 'default'}</div>
             <div>⏱️ Duration: ${duration}s</div>
             <div>🕐 Started: ${startTime}</div>
         </div>

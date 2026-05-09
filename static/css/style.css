@@ -34,7 +34,7 @@ h1 { color:var(--primary); font-size:1.6rem; }
 .tab-content.active { display:block; }
 
 /* ===== PANELS ===== */
-.controls-panel, .safety-panel, .benchmarks-panel, .logs-main-panel, .system-panel {
+.controls-panel, .safety-panel, .fan-panel, .benchmarks-panel, .logs-main-panel, .system-panel {
     background:var(--card); border-radius:var(--radius); padding:20px; margin-bottom:16px; box-shadow:0 2px 8px rgba(0,0,0,.3);
 }
 h2 { color:var(--primary); margin-bottom:15px; font-size:1.3rem; }
@@ -96,9 +96,16 @@ h3 { color:var(--text); font-size:1rem; margin-bottom:12px; }
 .progress-fill { height:100%; background:var(--primary); border-radius:2px; transition:width .5s; }
 .progress-fill.warning { background:var(--warning); }
 .progress-fill.danger { background:var(--danger); }
-.fan-control { border-top:1px solid var(--border); padding-top:12px; margin-top:4px; }
-.fan-control-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:14px; }
-.fan-slider { width:100%; accent-color:var(--primary); margin-bottom:4px; }
+
+/* ===== FAN CONTROL PANEL ===== */
+.fan-curve-info { font-size:12px; color:var(--text2); background:var(--card2); border-radius:5px; padding:8px 14px; margin-bottom:14px; border-left:3px solid var(--primary); }
+.fan-controls-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:14px; }
+.fan-gpu-card { background:var(--card2); border-radius:8px; padding:14px; border:1px solid var(--border); }
+.fan-gpu-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.fan-speed-badge { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:3px 10px; font-size:13px; font-weight:700; color:var(--primary); }
+.fan-mode-row { display:flex; align-items:center; margin-bottom:10px; }
+.fan-manual-row { padding-top:10px; border-top:1px solid var(--border); transition:opacity .2s; }
+.fan-manual-row input[type="range"] { accent-color:var(--primary); }
 
 /* ===== BENCHMARKS ===== */
 .benchmarks-list { display:flex; flex-direction:column; gap:12px; }

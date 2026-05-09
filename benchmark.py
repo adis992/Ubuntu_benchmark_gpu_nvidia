@@ -50,14 +50,14 @@ class _StressWorker:
 
             # Pre-allocate matrices once
             try:
-                a = cp.full((size, size), 0.1, dtype=dtype)
-                b = cp.full((size, size), 0.1, dtype=dtype)
+                a = cp.full((size, size), 0.5, dtype=dtype)
+                b = cp.full((size, size), 0.5, dtype=dtype)
                 c = cp.zeros((size, size), dtype=dtype)
             except Exception:
                 size = max(512, size // 2)
                 logger.warning(f"GPU {self.gpu_idx}: OOM on alloc, reduced to {size}x{size}")
-                a = cp.full((size, size), 0.1, dtype=dtype)
-                b = cp.full((size, size), 0.1, dtype=dtype)
+                a = cp.full((size, size), 0.5, dtype=dtype)
+                b = cp.full((size, size), 0.5, dtype=dtype)
                 c = cp.zeros((size, size), dtype=dtype)
 
             # Memory buffer for mixed/memory workloads
@@ -65,27 +65,38 @@ class _StressWorker:
             if self.workload_type in ('memory', 'mixed'):
                 try:
                     n = min(self.memory_mb * 1024 * 1024 // 4, 256 * 1024 * 1024)
-                    mem_buf = cp.zeros(n, dtype=cp.float32)
+                    mem_buf = cp.ones(n, dtype=cp.float32)  # ones avoids mul-by-zero degeneration
                 except Exception:
                     mem_buf = None
 
             delay = max(0.0, (100 - self.stress_level) / 2000.0)
             it = 0
+            total_flops = 0
+            stress_start = time.time()
 
             while not self._stop:
                 try:
                     if self.workload_type != 'memory':
+                        # Two matrix multiplies per iteration for higher compute density
                         cp.matmul(a, b, out=c)
-                        cp.sqrt(c, out=c)
+                        cp.sqrt(cp.abs(c), out=c)
                         cp.sin(c, out=c)
+                        cp.matmul(c, b, out=a)   # second matmul
+                        cp.cos(a, out=a)
                         cp.cuda.Stream.null.synchronize()
                         it += 1
-                        if it % 100 == 0:
-                            a[:] = cp.sin(c)
+                        total_flops += 4 * size * size * size  # 2 matmuls ≈ 4*n³ FLOP
+                        if it % 50 == 0:
+                            # Refresh matrices to avoid degenerate values
+                            a[:] = cp.float32(0.5)
+                            b[:] = cp.float32(0.5)
 
                     if mem_buf is not None:
-                        cp.random.random(len(mem_buf), out=mem_buf)
-                        _ = float(cp.sum(mem_buf))
+                        # In-place ops stress VRAM bandwidth without new allocations
+                        cp.multiply(mem_buf, cp.float32(1.001), out=mem_buf)
+                        _ = float(cp.mean(mem_buf))
+                        if it % 100 == 0:
+                            mem_buf[:] = cp.float32(1.0)  # prevent overflow
                         cp.cuda.Stream.null.synchronize()
 
                     if delay > 0:
@@ -94,14 +105,19 @@ class _StressWorker:
                 except cp.cuda.memory.OutOfMemoryError:
                     size = max(512, size // 2)
                     logger.warning(f"GPU {self.gpu_idx}: OOM during run, shrinking to {size}x{size}")
-                    a = cp.full((size, size), 0.1, dtype=dtype)
-                    b = cp.full((size, size), 0.1, dtype=dtype)
+                    a = cp.full((size, size), 0.5, dtype=dtype)
+                    b = cp.full((size, size), 0.5, dtype=dtype)
                     c = cp.zeros((size, size), dtype=dtype)
                     mem_buf = None
                     time.sleep(0.5)
                 except Exception as e:
                     logger.error(f"GPU {self.gpu_idx} stress loop error: {e}")
                     time.sleep(0.2)
+
+            elapsed = time.time() - stress_start
+            if elapsed > 0 and total_flops > 0:
+                gflops = total_flops / elapsed / 1e9
+                logger.info(f"GPU {self.gpu_idx}: ~{gflops:.1f} GFLOPS over {elapsed:.1f}s ({it} iterations)")
 
         except Exception as e:
             logger.error(f"GPU {self.gpu_idx} stress FATAL: {e}", exc_info=True)
@@ -139,17 +155,32 @@ class BenchmarkWorkload:
     
     def start_benchmark(self, gpu_indices: List[int], duration: int,
                         stress_level: int = 100, workload_type: str = 'mixed',
-                        precision: str = 'fp32', memory_level: int = 50) -> Dict:
+                        precision: str = 'fp32', memory_level: int = 50,
+                        power_limit: int = None) -> Dict:
         """Start benchmark on specified GPUs"""
         benchmark_id = f"bench_{int(time.time())}"
         
         if not gpu_indices:
             return {"success": False, "error": "No GPUs specified"}
 
-        # Kill any lingering workers for these GPUs from previous benchmarks
+        # Stop any running benchmarks that share selected GPUs and wait briefly.
+        # This avoids power-limit restore races between old and new runs.
+        conflicting_ids = []
         for bid in list(self.active_benchmarks.keys()):
             if any(g in self.active_benchmarks[bid]["gpu_indices"] for g in gpu_indices):
                 self.stop_flags[bid] = True
+                conflicting_ids.append(bid)
+
+        if conflicting_ids:
+            wait_until = time.time() + 10.0
+            while time.time() < wait_until:
+                still_running = [bid for bid in conflicting_ids if bid in self.active_benchmarks]
+                if not still_running:
+                    break
+                time.sleep(0.2)
+            leftover = [bid for bid in conflicting_ids if bid in self.active_benchmarks]
+            if leftover:
+                logger.warning(f"Starting {benchmark_id} while previous benchmarks still ending: {leftover}")
 
         # Clean up finished stop_flags
         for bid in list(self.stop_flags.keys()):
@@ -168,6 +199,7 @@ class BenchmarkWorkload:
             "workload_type": workload_type,
             "precision": precision,
             "memory_level": memory_level,
+            "power_limit": power_limit,
             "start_time": datetime.now(),
             "end_time": datetime.now() + timedelta(seconds=duration),
             "status": "running",
@@ -179,14 +211,15 @@ class BenchmarkWorkload:
         # Start benchmark thread
         thread = threading.Thread(
             target=self._run_benchmark,
-            args=(benchmark_id, gpu_indices, duration, stress_level, workload_type, precision, memory_level),
+            args=(benchmark_id, gpu_indices, duration, stress_level, workload_type, precision, memory_level, power_limit),
             daemon=True
         )
         thread.start()
         self.benchmark_threads[benchmark_id] = thread
         
         logger.info(f"Started benchmark {benchmark_id} on GPUs {gpu_indices} for {duration}s "
-                    f"at {stress_level}% stress, type={workload_type}, precision={precision}")
+                    f"at {stress_level}% stress, type={workload_type}, precision={precision}"
+                    f"{f', power_limit={power_limit}W' if power_limit else ''}")
         
         return {
             "success": True,
@@ -195,15 +228,30 @@ class BenchmarkWorkload:
             "duration": duration,
             "stress_level": stress_level,
             "workload_type": workload_type,
-            "precision": precision
+            "precision": precision,
+            "power_limit": power_limit
         }
     
     def _run_benchmark(self, benchmark_id: str, gpu_indices: List[int], duration: int,
                        stress_level: int, workload_type: str = 'mixed',
-                       precision: str = 'fp32', memory_level: int = 50):
+                       precision: str = 'fp32', memory_level: int = 50,
+                       power_limit: int = None):
         """Run the actual benchmark workload"""
         start_time = time.time()
         processes = []
+        original_limits = {}
+
+        # Apply power limit before workers start
+        if power_limit:
+            for gpu_idx in gpu_indices:
+                orig = self.gpu_monitor.get_power_limit(gpu_idx)
+                if orig:
+                    original_limits[gpu_idx] = orig
+                result = self.gpu_monitor.set_power_limit(gpu_idx, power_limit)
+                if result.get('success'):
+                    logger.info(f"GPU {gpu_idx}: power limit set to {power_limit}W")
+                else:
+                    logger.warning(f"GPU {gpu_idx}: could not set power limit: {result.get('error', 'unknown')}")
         
         try:
             # Start GPU stress process for each GPU
@@ -294,7 +342,39 @@ class BenchmarkWorkload:
                     proc.wait(timeout=5)
                 except:
                     proc.kill()
-            
+
+            # Restore original power limits, unless another benchmark is still
+            # actively running on the same GPU.
+            if power_limit:
+                for gpu_idx in gpu_indices:
+                    gpu_busy_elsewhere = any(
+                        (other_id != benchmark_id)
+                        and (gpu_idx in other_data.get("gpu_indices", []))
+                        and (other_data.get("status") == "running")
+                        for other_id, other_data in self.active_benchmarks.items()
+                    )
+                    if gpu_busy_elsewhere:
+                        logger.info(
+                            f"GPU {gpu_idx}: skip power limit restore for {benchmark_id} "
+                            "because another benchmark is running on this GPU"
+                        )
+                        continue
+
+                    restore_w = original_limits.get(gpu_idx)
+                    if restore_w:
+                        self.gpu_monitor.set_power_limit(gpu_idx, restore_w)
+                        logger.info(f"GPU {gpu_idx}: power limit restored to {restore_w}W")
+                    else:
+                        self.gpu_monitor.reset_power_limit(gpu_idx)
+
+            # Reset fan control to driver-auto after benchmark ends
+            for gpu_idx in gpu_indices:
+                try:
+                    self.gpu_monitor.reset_fan_control(gpu_idx)
+                    logger.info(f"GPU {gpu_idx}: fan control reset to auto after benchmark")
+                except Exception as e:
+                    logger.warning(f"GPU {gpu_idx}: could not reset fan after benchmark: {e}")
+
             # Update status
             if benchmark_id in self.active_benchmarks:
                 # Only mark as completed if it wasn't already marked as stopped_critical_temp
@@ -353,6 +433,10 @@ class BenchmarkWorkload:
             "gpu_indices": v["gpu_indices"],
             "duration": v["duration"],
             "stress_level": v["stress_level"],
+            "workload_type": v.get("workload_type", "mixed"),
+            "precision": v.get("precision", "fp32"),
+            "memory_level": v.get("memory_level", 50),
+            "power_limit": v.get("power_limit"),
             "start_time": v["start_time"].isoformat(),
             "end_time": v["end_time"].isoformat(),
             "status": v["status"],

@@ -147,15 +147,26 @@ def api_benchmark_start():
     workload_type = data.get('workload_type', 'mixed')
     precision = data.get('precision', 'fp32')
     memory_level = data.get('memory_level', 50)
+    power_limit = data.get('power_limit', None)
     
     # Validate duration
     max_duration = config['benchmark']['max_duration']
     if duration > max_duration:
         return jsonify({'error': f'Duration exceeds maximum of {max_duration} seconds'}), 400
     
+    # Validate power_limit
+    if power_limit is not None:
+        try:
+            power_limit = int(power_limit)
+            if power_limit < 50 or power_limit > 600:
+                return jsonify({'error': 'power_limit must be between 50 and 600 watts'}), 400
+        except (TypeError, ValueError):
+            return jsonify({'error': 'power_limit must be an integer'}), 400
+    
     result = benchmark_workload.start_benchmark(
         gpu_indices, duration, stress_level,
-        workload_type=workload_type, precision=precision, memory_level=memory_level
+        workload_type=workload_type, precision=precision,
+        memory_level=memory_level, power_limit=power_limit
     )
     
     if result['success']:
@@ -197,6 +208,71 @@ def api_benchmarks_results():
                 safe[k] = v
         results[bid] = safe
     return jsonify(results)
+
+
+@app.route('/api/power/limits')
+def api_power_limits():
+    """Get power limit range (min/current/max) for all GPUs"""
+    limits = {}
+    for i in range(gpu_monitor.gpu_count):
+        limits[i] = gpu_monitor.get_power_limits_range(i)
+    return jsonify(limits)
+
+
+@app.route('/api/power/set', methods=['POST'])
+def api_power_set():
+    """Set power limit for a GPU (requires root)"""
+    data = request.json
+    gpu_id = data.get('gpu_id')
+    watts = data.get('watts')
+    if gpu_id is None or watts is None:
+        return jsonify({'error': 'gpu_id and watts are required'}), 400
+    try:
+        watts = int(watts)
+        gpu_id = int(gpu_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'gpu_id and watts must be integers'}), 400
+    if watts < 50 or watts > 600:
+        return jsonify({'error': 'watts must be between 50 and 600'}), 400
+    result = gpu_monitor.set_power_limit(gpu_id, watts)
+    if result['success']:
+        return jsonify(result)
+    return jsonify(result), 500
+
+
+@app.route('/api/power/reset', methods=['POST'])
+def api_power_reset():
+    """Reset power limit to card maximum"""
+    data = request.json
+    gpu_id = data.get('gpu_id')
+    if gpu_id is None:
+        return jsonify({'error': 'gpu_id is required'}), 400
+    result = gpu_monitor.reset_power_limit(int(gpu_id))
+    if result['success']:
+        return jsonify(result)
+    return jsonify(result), 500
+
+
+@app.route('/api/fan/auto', methods=['GET'])
+def api_fan_auto_get():
+    """Get auto fan curve status for all GPUs"""
+    return jsonify(gpu_monitor.get_auto_fan_status())
+
+
+@app.route('/api/fan/auto', methods=['POST'])
+def api_fan_auto_set():
+    """Enable or disable the auto fan curve for a GPU"""
+    data = request.json
+    gpu_id = data.get('gpu_id')
+    enabled = data.get('enabled', True)
+    if gpu_id is None:
+        return jsonify({'error': 'gpu_id is required'}), 400
+    gpu_id = int(gpu_id)
+    if enabled:
+        ok = gpu_monitor.enable_auto_fan_curve(gpu_id)
+    else:
+        ok = gpu_monitor.disable_auto_fan_curve(gpu_id)
+    return jsonify({'success': ok, 'gpu_id': gpu_id, 'auto_fan': enabled})
 
 
 @app.route('/api/fan/set', methods=['POST'])
@@ -373,8 +449,44 @@ def api_system_health():
     for i in range(gpu_monitor.gpu_count):
         gpu_result = {'gpu_index': i, 'checks': [], 'status': 'ok'}
         try:
+            # First check for hardware fault / ERR! state via nvidia-smi
+            err_state = gpu_monitor.check_gpu_error_state(i)
+            if err_state['error']:
+                gpu_result['status'] = 'error'
+                gpu_result['error'] = err_state['reason']
+                gpu_result['checks'].append({'name': 'GPU fault state (nvidia-smi)', 'ok': False})
+                # Try to get name and temp even in bad state
+                try:
+                    info = gpu_monitor.get_gpu_info(i)
+                    if info:
+                        gpu_result['name'] = info.get('name', f'GPU {i}')
+                        gpu_result['checks'].append({'name': f'Temperature: {info["temperature"]}°C', 'ok': True})
+                        gpu_result['checks'].append({'name': f'Memory: {info["memory"]["used_mb"]:.0f} / {info["memory"]["total_mb"]:.0f} MB', 'ok': True})
+                except Exception:
+                    pass
+                results.append(gpu_result)
+                continue
+
             info = gpu_monitor.get_gpu_info(i)
             if info:
+                # Check ECC uncorrected errors via nvidia-smi
+                ecc_errors = 0
+                try:
+                    r = subprocess.run(
+                        ['nvidia-smi', '-i', str(i),
+                         '--query-gpu=ecc.errors.uncorrected.volatile.total',
+                         '--format=csv,noheader,nounits'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if r.returncode == 0:
+                        val = r.stdout.strip()
+                        if val not in ('', 'N/A', '[N/A]'):
+                            ecc_errors = int(val)
+                except Exception:
+                    pass
+
+                limits = gpu_monitor.get_power_limits_range(i)
+
                 checks = [
                     ('Temperature readable', info['temperature'] is not None),
                     ('Utilization readable', info['utilization']['gpu'] is not None),
@@ -383,11 +495,23 @@ def api_system_health():
                     ('Clock readable', info['clocks']['graphics'] is not None),
                     ('Temperature sane', 0 < info['temperature'] < 120),
                     ('Memory sane', info['memory']['used_mb'] >= 0),
+                    ('No uncorrected ECC errors', ecc_errors == 0),
+                    ('Power limit readable', limits.get('max', 0) > 0),
                 ]
                 for name, ok in checks:
                     gpu_result['checks'].append({'name': name, 'ok': ok})
                     if not ok:
                         gpu_result['status'] = 'warning'
+
+                # Add informational lines
+                gpu_result['checks'].append({
+                    'name': f'Power: {info["power"]["usage"]:.1f} W / {limits.get("current", 0)} W (max {limits.get("max", 0)} W)',
+                    'ok': True
+                })
+                if ecc_errors > 0:
+                    gpu_result['checks'].append({'name': f'⚠️ ECC uncorrected errors: {ecc_errors}', 'ok': False})
+                    gpu_result['status'] = 'warning'
+
                 gpu_result['name'] = info.get('name', f'GPU {i}')
             else:
                 gpu_result['status'] = 'error'
