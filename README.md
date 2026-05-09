@@ -1,5 +1,34 @@
 # 🎮 NVIDIA GPU Benchmark Tool
 
+## 🚀 Quick Start
+
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/adis992/Ubuntu_benchmark_gpu_nvidia.git
+cd Ubuntu_benchmark_gpu_nvidia
+```
+
+2. Install the tool:
+```bash
+sudo ./install.sh
+```
+
+The installer will:
+- install Linux dependencies
+- create the Python virtual environment
+- install Python packages
+- register the systemd service
+- start the service automatically
+
+3. Open the dashboard panel:
+- Local machine: [http://localhost:5000](http://localhost:5000)
+- Remote machine: [http://YOUR_SERVER_IP:5000](http://YOUR_SERVER_IP:5000)
+
+If you installed on a remote server, make sure port `5000` is reachable from your browser.
+
+
 Professional GPU benchmarking and monitoring tool for NVIDIA graphics cards on Ubuntu/Linux systems.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
