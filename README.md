@@ -61,46 +61,63 @@ Professional GPU benchmarking and monitoring tool for NVIDIA graphics cards on U
 
 ### Installation
 
-1. **Clone or download this repository**
+1. Clone the repository:
 ```bash
-cd /home/noname/Ubuntu_benchmark_gpu_nvidia
+git clone https://github.com/adis992/Ubuntu_benchmark_gpu_nvidia.git
+cd Ubuntu_benchmark_gpu_nvidia
 ```
 
-2. **Run the installation script**
+2. Install the tool:
 ```bash
 sudo ./install.sh
 ```
 
-The installation script will:
-- Install system dependencies
-- Create Python virtual environment
-- Install Python packages
-- Set up systemd service
-- Start the service automatically
+The installer will:
+- install Linux dependencies
+- create the Python virtual environment
+- install Python packages
+- register the systemd service
+- start the service automatically
 
-3. **Access the dashboard**
+3. Open the dashboard panel:
+- Local machine: [http://localhost:5000](http://localhost:5000)
+- Remote machine: [http://YOUR_SERVER_IP:5000](http://YOUR_SERVER_IP:5000)
 
-Open your browser and navigate to:
-- `http://localhost:5000`
-- Or from another device: `http://YOUR_SERVER_IP:5000`
+If you installed on a remote server, make sure port `5000` is reachable from your browser.
 
 ### Manual Start (Without Service)
 
-If you prefer to run manually without installing as a service:
+If you prefer not to install the systemd service:
 
 ```bash
 ./start.sh
 ```
 
+### First Run Checklist
+
+- Confirm `nvidia-smi` works
+- Open the panel and verify both GPUs are visible
+- Keep Power Limit at the default `300 W` for the first test
+- Start with a short benchmark duration such as `30` to `60` seconds
+
 ## 📖 Usage Guide
 
 ### Starting a Benchmark
 
-1. **Select GPUs**: Check the boxes for GPUs you want to benchmark
-2. **Set duration**: Enter benchmark duration in seconds (default: 300)
-3. **Choose stress level**: Adjust the slider (1-100%, default: 100%)
-4. **Configure safety**: Set temperature limits if needed
-5. **Click "Start Benchmark"**: Monitor progress in real-time
+1. Select the GPUs you want to stress.
+2. Set benchmark duration.
+3. Choose workload type and precision.
+4. Set the Power Limit. Default is `300 W`.
+5. Start the benchmark and watch the live GPU cards update in real time.
+
+Recommended first test:
+```bash
+Duration: 60
+Stress: 90-100%
+Workload: mixed
+Precision: fp32
+Power Limit: 300 W
+```
 
 ### Monitoring GPUs
 
@@ -114,17 +131,26 @@ The dashboard automatically displays:
 
 ### Fan Control
 
-**Note**: Fan control requires specific driver support and elevated permissions.
+**Note**: Fan control requires NVIDIA driver support and may need elevated permissions depending on your system.
 
-1. **Manual mode**: Drag the fan slider for each GPU
-2. **Automatic mode**: Click the "Auto" button to return to driver control
+The dashboard now supports two fan modes:
+
+- **Auto Curve**: temperature-based fan curve
+  - below `50°C` → `30%`
+  - `50°C` → `55%`
+  - increases by `1%` per degree above `50°C`
+  - `95°C` → `100%`
+- **Manual**: fixed fan speed set per GPU from the fan control panel
+
+Use Auto Curve for normal testing and manual mode only when you want a constant fixed fan speed.
 
 ### Safety Settings
 
 Configure thermal protection:
-- **Max Temperature**: Warning threshold (default: 85°C)
-- **Critical Temperature**: Emergency shutdown threshold (default: 90°C)
+- **Max Temperature**: Warning threshold (default: 100°C)
+- **Critical Temperature**: Emergency shutdown threshold (default: 105°C)
 - **Auto-shutdown**: Enable automatic benchmark stop on critical temp
+- **Power Limit**: Set a safe operating limit before starting the test
 
 Click "Save Settings" to apply changes.
 
@@ -153,6 +179,9 @@ sudo systemctl status nvidia-gpu-benchmark
 # View logs
 sudo journalctl -u nvidia-gpu-benchmark -f
 
+# View application log
+tail -f /opt/nvidia-gpu-benchmark/logs/server.log
+
 # Disable auto-start
 sudo systemctl disable nvidia-gpu-benchmark
 
@@ -164,8 +193,6 @@ sudo systemctl enable nvidia-gpu-benchmark
 
 Logs are stored in the `logs/` directory:
 - `server.log`: Main application log
-- `service.log`: Systemd service output
-- `service_error.log`: Systemd service errors
 - `crash_detection.log`: Critical events and crashes
 
 ## 🏗️ Architecture
@@ -202,6 +229,8 @@ nvidia-gpu-benchmark/
 - `GET /api/benchmarks/results` - Benchmark results
 - `POST /api/fan/set` - Set fan speed
 - `POST /api/fan/reset` - Reset fan control
+- `GET /api/fan/auto` - Get auto fan curve status
+- `POST /api/fan/auto` - Enable or disable auto fan curve
 - `GET /api/config` - Get configuration
 - `POST /api/config/update` - Update configuration
 
@@ -234,9 +263,9 @@ Edit `config.json` to customize settings:
     }
   },
   "safety": {
-    "max_temperature": 85,
-    "critical_temperature": 90,
-    "auto_shutdown_on_critical": true
+    "max_temperature": 100,
+    "critical_temperature": 105,
+    "auto_stop_benchmark_on_critical": true
   }
 }
 ```
@@ -254,6 +283,15 @@ Common issues:
 - NVIDIA drivers not installed: `sudo apt install nvidia-driver-XXX`
 - Port 5000 already in use: Change port in `config.json`
 - Missing dependencies: Run `pip install -r requirements.txt`
+
+### Benchmark starts but power limit looks wrong
+
+If a benchmark starts with a power limit but the GPU still shows a different value:
+- make sure no other benchmark is still running on the same GPU
+- stop all active benchmarks before starting a new one
+- refresh the dashboard after start
+
+The tool now waits for overlapping benchmarks to clear, but an old long-running run can still hold the GPU if it was started manually.
 
 ### No GPUs detected
 
@@ -303,6 +341,13 @@ This project is open source and available under the MIT License.
 - NVIDIA Driver 535.x
 
 Should work with most NVIDIA GPUs that support `nvidia-smi`.
+
+## 📍 Panel URL
+
+After installation, open the web panel here:
+
+- [http://localhost:5000](http://localhost:5000) for the local machine
+- [http://SERVER_IP:5000](http://SERVER_IP:5000) from another machine on the network
 
 ## 📞 Support
 
